@@ -6,27 +6,35 @@ set -euo pipefail
 # This repo lives on an exFAT external disk. macOS cannot store extended
 # attributes there, so it writes an AppleDouble sibling for every file —
 # `_journal.json` gets a `.__journal.json` next to it. drizzle-kit globs
-# `meta/*.json` and tries to JSON.parse that sibling, which is binary, and the
-# whole command dies with "Unexpected token ' '".
+# `meta/*.json`, tries to JSON.parse that sibling, and the command dies.
 #
-# Cleaning beforehand does not help: drizzle-kit creates the file during its own
-# run. So generation happens on the system disk, which is APFS, and the result
-# is copied back without the siblings.
+# Cleaning first does not help: drizzle-kit creates the file during its own run.
+# Pointing `out` at an absolute path outside the volume does not work either —
+# drizzle-kit prefixes `./`, so `/var/folders/...` becomes `.//var/folders/...`.
+#
+# So the output path stays relative and is a symlink into the system disk, which
+# is APFS. drizzle-kit writes through it, no siblings are created, and the result
+# is copied back into the repo.
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="${TMPDIR:-/tmp}/obizee-erp-drizzle"
-
-rm -rf "$WORK_DIR"
-mkdir -p "$WORK_DIR"
-
-if [ -d "$REPO_DIR/drizzle" ]; then
-  rsync -a --exclude '._*' "$REPO_DIR/drizzle/" "$WORK_DIR/"
-fi
+LINK=".drizzle-work"
 
 cd "$REPO_DIR"
-DRIZZLE_OUT="$WORK_DIR" npx drizzle-kit generate "$@"
+rm -rf "$WORK_DIR" "$LINK"
+mkdir -p "$WORK_DIR"
 
-rsync -a --delete --exclude '._*' "$WORK_DIR/" "$REPO_DIR/drizzle/"
-find "$REPO_DIR/drizzle" -name '._*' -delete 2>/dev/null || true
+if [ -d drizzle ]; then
+  rsync -a --exclude '._*' drizzle/ "$WORK_DIR/"
+fi
+
+ln -s "$WORK_DIR" "$LINK"
+trap 'rm -f "$REPO_DIR/$LINK"' EXIT
+
+DRIZZLE_OUT="$LINK" npx drizzle-kit generate "$@"
+
+mkdir -p drizzle
+rsync -a --delete --exclude '._*' "$WORK_DIR/" drizzle/
+find drizzle -name '._*' -delete 2>/dev/null || true
 
 echo "Generated into $REPO_DIR/drizzle"

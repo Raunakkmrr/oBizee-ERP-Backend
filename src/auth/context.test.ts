@@ -8,7 +8,7 @@ import {
   stripFields,
   type AppEnv,
   type Caller,
-} from "./context.js";
+} from "./context.ts";
 
 beforeAll(() => {
   process.env.JWT_SECRET = "a".repeat(48);

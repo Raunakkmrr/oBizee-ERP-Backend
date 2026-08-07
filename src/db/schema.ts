@@ -13,7 +13,7 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core";
-import * as e from "./enums.js";
+import * as e from "./enums.ts";
 
 /**
  * Re-exported so drizzle-kit sees them.
@@ -23,7 +23,7 @@ import * as e from "./enums.js";
  * to generation, so the first migration created tables referencing types it had
  * never created — `type "tax_head" does not exist`, on statement 1 of 98.
  */
-export * from "./enums.js";
+export * from "./enums.ts";
 
 /**
  * oBizee Service ERP — the schema.
@@ -639,3 +639,59 @@ export const SQL_GUARDS = sql`
   -- FR-1305: audit entries likewise.
   -- Applied as migrations after table creation; see drizzle/0001_guards.sql
 `;
+
+/* ------------------------------------------------------------ sign-in */
+
+/**
+ * A one-time code in flight.
+ *
+ * Stored hashed, exactly like a password. A six-digit code is guessable in a
+ * hundred thousand tries, so the row carries its own attempt counter and the
+ * verifier refuses after five — rate limiting lives on the challenge rather
+ * than on an IP, because the thing being protected is this phone number.
+ *
+ * `user_id` is resolved when the code is requested, not when it is verified. A
+ * request for a number nobody has still returns 200 and still takes the same
+ * time; telling a caller which numbers exist is a free directory of your staff.
+ */
+export const otpChallenges = pgTable(
+  "otp_challenges",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    phoneE164: text("phone_e164").notNull(),
+    userId: uuid("user_id").references(() => users.id),
+    codeHash: text("code_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    /** Set the moment it is spent. A code works exactly once. */
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("otp_phone_idx").on(t.phoneE164, t.createdAt)],
+);
+
+/**
+ * Refresh tokens, hashed and rotated.
+ *
+ * Rotated on every use: presenting a refresh token returns a new one and
+ * revokes the old. If a stolen token is used after the real one has rotated,
+ * `rotated_from` shows a token being replayed — which is the only reliable
+ * signal that a session was lifted.
+ */
+export const refreshTokens = pgTable(
+  "refresh_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    rotatedFrom: uuid("rotated_from"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("refresh_tokens_hash_uq").on(t.tokenHash),
+    index("refresh_tokens_user_idx").on(t.userId),
+  ],
+);

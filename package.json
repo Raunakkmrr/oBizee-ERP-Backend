@@ -8,13 +8,14 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev": "node --env-file=.env --experimental-strip-types --watch src/server.ts",
+    "start": "node --env-file=.env --experimental-strip-types src/server.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",
     "@hono/zod-validator": "^0.9.0",
     "@neondatabase/serverless": "^1.1.0",
-    "argon2": "^0.45.1",
     "drizzle-orm": "^0.45.2",
     "drizzle-zod": "^0.8.3",
     "hono": "^4.13.1",

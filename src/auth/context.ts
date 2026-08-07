@@ -1,6 +1,6 @@
 import type { Context, MiddlewareHandler, Next } from "hono";
 import { jwtVerify, SignJWT } from "jose";
-import { can, type Permission, type Role } from "./roles.js";
+import { can, type Permission, type Role } from "./roles.ts";
 
 /**
  * Who is calling, which tenant they belong to, and what they may do.

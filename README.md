@@ -83,7 +83,51 @@ a permission check here is security.** Both are needed, neither substitutes.
 The tenant comes off the token and never from a parameter, so a handler cannot
 forget to scope a query.
 
+## Signing in
+
+One identity, two ways to prove it. Field staff use a phone and a one-time
+code; the office uses an email and a password. Both land in the same `users`
+row and produce the same tokens.
+
+    POST /auth/otp/request   { phone }
+    POST /auth/otp/verify    { phone, code }  -> access + refresh
+    POST /auth/password      { email, password }
+    POST /auth/refresh       { refreshToken }
+
+Route order is the security model: these are mounted **before**
+`requireCaller`, so a new route is protected by default. Forgetting a guard
+fails closed.
+
+### The development OTP
+
+There is no SMS provider yet, so `OTP_PROVIDER=dev` accepts a fixed code —
+**123456** — for every number.
+
+That is a reasonable thing to build and a catastrophic thing to ship, so it is
+not guarded by a comment. `DevOtpSender` throws at construction when
+`NODE_ENV=production`, and again unless `OTP_DEV_MODE=on` is set explicitly.
+Two independent switches must both be wrong before a fixed code reaches a real
+user, and the process refuses to boot rather than running insecurely.
+
+`OTP_PROVIDER` has **no default** — an unset value is a configuration mistake,
+and guessing is how the wrong sender gets used.
+
+Wiring MSG91 later is implementing `Msg91OtpSender.send` and setting
+`OTP_PROVIDER=msg91`. Nothing else changes: not the routes, not the challenge
+table, not verification, expiry, single-use or the attempt limit. The dev
+sender does not skip any of that — it only makes the code predictable.
+
+### What the flow enforces
+
+| | |
+|---|---|
+| Requesting a code | Identical reply and timing whether the number is real, unknown, malformed or deactivated — otherwise the endpoint is a staff directory |
+| A code | Expires in 5 minutes, works exactly once, and is stored hashed |
+| Guessing | Five attempts per challenge. Six digits is 100,000 guesses, which is nothing |
+| Passwords | scrypt from Node core — see `src/auth/password.ts` for why not argon2 — with cost stored alongside so it can be raised later |
+| Wrong password vs unknown email | The same reply, and the same time spent |
+| Refresh tokens | Rotated on use; the old one is revoked, and the new one records what it replaced, so a replay is visible |
+
 ## Still to build
 
-Sign-in itself — phone and OTP for field staff, email and password for the
-office — the route layer over the schema, and refresh-token rotation.
+Routes over the schema, and seeding a tenant from the web app fixtures.
