@@ -1,8 +1,17 @@
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sum } from "drizzle-orm";
 import { db } from "../db/client.ts";
-import { customers, sites } from "../db/schema.ts";
+import {
+  assets,
+  contacts,
+  customers,
+  invoices,
+  jobs,
+  payments,
+  sites,
+  users,
+} from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
 import { audit } from "../lib/audit.ts";
@@ -21,8 +30,18 @@ import { audit } from "../lib/audit.ts";
  */
 export const customerRoutes = apiRouter();
 
+/** `8 Feb 2028` — dates are read by people, not parsers. */
+function dateWord(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(d.getTime())
+    ? null
+    : d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+}
+
 customerRoutes.get("/", requirePermission("customer:read"), async (c) => {
   const { tenantId } = c.get("caller");
+  const today = new Date();
 
   const rows = await db
     .select()
@@ -30,15 +49,91 @@ customerRoutes.get("/", requirePermission("customer:read"), async (c) => {
     .where(eq(customers.tenantId, tenantId))
     .orderBy(asc(customers.name));
 
-  const allSites = await db
-    .select()
-    .from(sites)
-    .where(eq(sites.tenantId, tenantId));
+  const [allSites, allContacts, allAssets, history, billed, received] = await Promise.all([
+    db.select().from(sites).where(eq(sites.tenantId, tenantId)),
+    db.select().from(contacts).where(eq(contacts.tenantId, tenantId)),
+    db.select().from(assets).where(eq(assets.tenantId, tenantId)),
+    /*
+      The service history a site has actually had. Built from jobs rather than
+      stored twice: a timeline that can drift from the job board is a timeline
+      nobody trusts.
+    */
+    db
+      .select({
+        id: jobs.id,
+        siteId: jobs.siteId,
+        jobNumber: jobs.jobNumber,
+        scheduledDate: jobs.scheduledDate,
+        serviceType: jobs.serviceType,
+        status: jobs.status,
+        technician: users.name,
+      })
+      .from(jobs)
+      .leftJoin(users, eq(jobs.primaryTechnicianId, users.id))
+      .where(eq(jobs.tenantId, tenantId)),
+    db
+      .select({ customerId: invoices.customerId, total: sum(invoices.grandTotalPaise) })
+      .from(invoices)
+      .where(eq(invoices.tenantId, tenantId))
+      .groupBy(invoices.customerId),
+    db
+      .select({ customerId: invoices.customerId, total: sum(payments.amountPaise) })
+      .from(payments)
+      .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
+      .where(eq(payments.tenantId, tenantId))
+      .groupBy(invoices.customerId),
+  ]);
+
+  const billedBy = new Map(billed.map((r) => [r.customerId, Number(r.total ?? 0)]));
+  const paidBy = new Map(received.map((r) => [r.customerId, Number(r.total ?? 0)]));
 
   return c.json({
     customers: rows.map((customer) => ({
       ...customer,
-      sites: allSites.filter((s) => s.customerId === customer.id),
+      // Derived, never a stored figure somebody has to keep in step.
+      outstandingPaise: (billedBy.get(customer.id) ?? 0) - (paidBy.get(customer.id) ?? 0),
+      sites: allSites
+        .filter((s) => s.customerId === customer.id)
+        .map((site) => ({
+          ...site,
+          contacts: allContacts.filter((x) => x.siteId === site.id).map((x) => ({
+            id: x.id,
+            name: x.name,
+            phone: x.phoneE164,
+            whatsapp: x.whatsappE164,
+            roleLabel: x.roleLabel,
+            isPrimary: x.isPrimary,
+          })),
+          assets: allAssets.filter((x) => x.siteId === site.id).map((x) => ({
+            id: x.id,
+            assetType: x.assetType,
+            make: x.make,
+            model: x.model,
+            serialNumber: x.serialNumber,
+            locationInSite: x.locationInSite ?? "",
+            condition: x.condition,
+            warrantyExpiry: x.warrantyExpiry
+              ? {
+                  dateWord: dateWord(x.warrantyExpiry) ?? x.warrantyExpiry,
+                  daysLeft: Math.round(
+                    (new Date(`${x.warrantyExpiry}T00:00:00`).getTime() - today.getTime()) /
+                      86_400_000,
+                  ),
+                }
+              : null,
+            repeatFailure: x.repeatFailure,
+          })),
+          timeline: history
+            .filter((h) => h.siteId === site.id && h.scheduledDate !== null)
+            .map((h) => ({
+              id: h.id,
+              dateWord: dateWord(h.scheduledDate) ?? "",
+              assetId: null,
+              jobNumber: h.jobNumber,
+              summary: `${h.serviceType} — ${h.status.toLowerCase().replace(/_/g, " ")}`,
+              technician: h.technician ?? "Unassigned",
+            })),
+        })),
     })),
   });
 });
