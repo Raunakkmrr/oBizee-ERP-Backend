@@ -225,6 +225,35 @@ export const leads = pgTable(
   ],
 );
 
+/**
+ * Every follow-up that actually happened — FR-104, §6.6.3.
+ *
+ * The lead row carries the *next* date; this carries what was said last time.
+ * §6.6.2 calls that "the highest-value element in the row", because without it
+ * a coordinator opens the record before every call. The lead table alone could
+ * not hold it: a lead has many follow-ups and only the latest is shown, so
+ * flattening it onto `leads` would lose the history the incentive and
+ * conversion reports read.
+ *
+ * `outcome` is the closed list from §6.6.3 rather than free text — free text
+ * alone is useless for reporting. `note` carries the words.
+ */
+export const leadActivities = pgTable(
+  "lead_activities",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    leadId: uuid("lead_id")
+      .notNull()
+      .references(() => leads.id, { onDelete: "cascade" }),
+    outcome: text("outcome").notNull(),
+    note: text("note"),
+    actorUserId: uuid("actor_user_id").references(() => users.id),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("lead_activities_lead_idx").on(t.tenantId, t.leadId, t.occurredAt)],
+);
+
 /* ----------------------------------------------------------- contracts */
 
 export const contracts = pgTable(
@@ -471,6 +500,35 @@ export const payments = pgTable("payments", {
 
 /* ------------------------------------------------------------ money out */
 
+/**
+ * Every chase on an unpaid invoice — FR-904, §6.12.1.
+ *
+ * The collections list is not a list of amounts, it is a list of
+ * conversations: "24 Jul — promised 5 Aug" is what stops a second call being
+ * made to someone who already committed. FR-904 excludes an unbroken promise
+ * from reminders, which means the promise has to be a stored fact with a date,
+ * not a note somebody typed into a spreadsheet.
+ *
+ * `promisedFor` is null when the customer said something other than a date.
+ * Whether a promise is *broken* is derived against today rather than stored —
+ * a stored flag would go stale overnight, which is exactly when it matters.
+ */
+export const collectionContacts = pgTable(
+  "collection_contacts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    invoiceId: uuid("invoice_id")
+      .notNull()
+      .references(() => invoices.id, { onDelete: "cascade" }),
+    note: text("note").notNull(),
+    promisedFor: date("promised_for"),
+    actorUserId: uuid("actor_user_id").references(() => users.id),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("collection_contacts_invoice_idx").on(t.tenantId, t.invoiceId, t.occurredAt)],
+);
+
 export const vendors = pgTable(
   "vendors",
   {
@@ -487,6 +545,14 @@ export const vendors = pgTable(
     udyamNumber: text("udyam_number"),
     /** A trading registration does not attract the MSMED timeline at all. */
     udyamActivity: e.udyamActivityEnum("udyam_activity"),
+  /**
+   * When the Udyam status was last checked — §6.12.3.
+   *
+   * A stored status with a date is honest; a stored status without one is a
+   * claim the screen cannot defend. A registration can lapse or be
+   * reclassified, so "Micro" with no date is not evidence of anything.
+   */
+  udyamVerifiedOn: date("udyam_verified_on"),
     /** §15 MSMED: with an agreement the limit is 45 days, without it 15. */
     hasWrittenAgreement: boolean("has_written_agreement").notNull().default(false),
     paymentTermsDays: integer("payment_terms_days").notNull().default(30),

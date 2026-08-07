@@ -22,6 +22,20 @@
       "when": 1786093503071,
       "tag": "0002_volatile_dreadnoughts",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786101335378,
+      "tag": "0003_thick_sharon_carter",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786101473955,
+      "tag": "0004_huge_joshua_kane",
+      "breakpoints": true
     }
   ]
 }
