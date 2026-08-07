@@ -296,10 +296,30 @@ export function levelLabel(role: Role, level: string | null): string | null {
  * and `price:view_selling` arrive only at the senior level, which is the person
  * who actually goes and looks.
  */
-const LEVEL_GRANTS: Record<string, readonly Permission[]> = {
-  // Repeating a quote already made is not making one.
-  leads: ["price:view_selling"],
-  senior: ["quote:write", "price:view_selling", "contract:write"],
+/**
+ * Extra permissions a level grants — **keyed by role and level, never level
+ * alone**.
+ *
+ * A flat map keyed on the level string was a privilege escalation. Both
+ * marketing and technician have a `senior` rung, so a senior *technician* was
+ * granted `quote:write`, `contract:write` and `price:view_selling` — the senior
+ * *marketer's* permissions. FR-1302's technician price control is precisely an
+ * anti-freelancing measure, so the bug handed the margin to the one person it
+ * exists to keep it from.
+ *
+ * The same collision was fixed for level *labels* long ago and missed here.
+ * Two departments are allowed to use the same word for their top rung and mean
+ * entirely different jobs.
+ */
+const LEVEL_GRANTS: Partial<Record<Role, Record<string, readonly Permission[]>>> = {
+  marketing: {
+    // Repeating a quote already made is not making one.
+    leads: ["price:view_selling"],
+    senior: ["quote:write", "price:view_selling", "contract:write"],
+  },
+  // A technician's ladder is about dispatch judgement — who gets sent to a
+  // breakdown — and grants no commercial permission at any rung.
+  technician: {},
 };
 
 export function can(
@@ -313,7 +333,7 @@ export function can(
    */
   level?: string | null,
 ): boolean {
-  if (level && LEVEL_GRANTS[level]?.includes(permission)) return true;
+  if (level && LEVEL_GRANTS[role]?.[level]?.includes(permission)) return true;
 
   if (
     role === "technician" &&

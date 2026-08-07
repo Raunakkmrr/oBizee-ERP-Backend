@@ -128,6 +128,41 @@ sender does not skip any of that — it only makes the code predictable.
 | Wrong password vs unknown email | The same reply, and the same time spent |
 | Refresh tokens | Rotated on use; the old one is revoked, and the new one records what it replaced, so a replay is visible |
 
+## Seed data
+
+    node --env-file=.env --experimental-strip-types src/db/seed.ts
+
+Idempotent. Creates Shakti Cooling — the firm the web app's fixtures describe.
+Nothing in it is random; every row exercises a rule:
+
+| Row | The rule it exercises |
+|---|---|
+| Shakti Industries — sites in **07 and 27** | The same customer bills CGST+SGST from one site and IGST from the other |
+| Sunrise Apartments RWA — Haryana GSTIN | Permanently interstate against a Delhi branch |
+| Mrs. Deshpande — **no GSTIN** | The common household case |
+| Verma Electricals — unregistered **individual** | Reverse charge *and* §194C at 1%, not 2% |
+| Metro Refrigeration — **trading** Udyam | The MSMED timeline excludes it — the case people get wrong |
+| Counters at 440 / 149 / 6 | The first document issued is 0441, not a suspicious 0001 |
+
+    office:  manish@shakticooling.test / obizee-dev-2026
+    field:   9820012345 + OTP 123456
+
+## Routes
+
+    GET  /api/customers          list, with sites
+    GET  /api/customers/:id      404s across tenants, even with a valid id
+    POST /api/customers          customer + first site in one call
+    GET  /api/jobs               scoped by role — see below
+    POST /api/jobs               takes its number from the atomic sequence
+
+Two rules the jobs list enforces that are easy to get wrong:
+
+- **FR-306** — `job:read` is the whole board, `job:read_own` is a technician's
+  own work. Gating on `job:read` alone refuses technicians outright, which is
+  the wrong answer: they need the list, narrowed.
+- **FR-1302** — prices are removed from the payload, not hidden in it. A
+  technician's response has no `valuePaise` key at all.
+
 ## Still to build
 
-Routes over the schema, and seeding a tenant from the web app fixtures.
+Invoices and contracts over the schema, then pointing the web app at the API.
