@@ -1,8 +1,17 @@
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { and, asc, count, eq } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { db } from "../db/client.ts";
-import { contacts, customers, jobs, leads, sites } from "../db/schema.ts";
+import {
+  contacts,
+  customers,
+  jobs,
+  leadActivities,
+  leads,
+  sites,
+  users,
+} from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
 import { e164 } from "../lib/phone.ts";
@@ -29,15 +38,128 @@ const SOURCES = [
   "Field/Marketing", "AMC renewal",
 ] as const;
 
+/** §6.6.3's closed outcome list — free text alone is useless for reporting. */
+const OUTCOMES = [
+  "Spoke", "No answer", "Busy", "Asked to call later", "Sent quote", "Won", "Lost",
+] as const;
+
+/**
+ * Which bucket a lead falls in — §6.6.1.
+ *
+ * `unassigned` outranks `overdue` deliberately: a lead nobody owns is a worse
+ * failure than a lead whose owner is late, because nobody is even responsible
+ * for it. The grouping is computed here rather than in the browser so the
+ * counts and the rows cannot disagree.
+ */
+function groupOf(
+  ownerUserId: string | null,
+  next: Date | null,
+  now: Date,
+): { group: string; dueWord: string; daysOverdue: number } {
+  if (!ownerUserId) return { group: "unassigned", dueWord: "No owner", daysOverdue: 0 };
+  if (!next) return { group: "later", dueWord: "No date", daysOverdue: 0 };
+
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const days = Math.floor((next.getTime() - startOfToday.getTime()) / 86_400_000);
+
+  if (days < 0) {
+    const late = Math.abs(days);
+    return {
+      group: "overdue",
+      dueWord: late === 1 ? "1 day late" : `${late} days late`,
+      daysOverdue: late,
+    };
+  }
+  if (days === 0) return { group: "today", dueWord: "Due today", daysOverdue: 0 };
+  if (days === 1) return { group: "tomorrow", dueWord: "Due tomorrow", daysOverdue: 0 };
+  if (days <= 7) return { group: "this_week", dueWord: `Due in ${days} days`, daysOverdue: 0 };
+  return {
+    group: "later",
+    dueWord: next.toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
+    daysOverdue: 0,
+  };
+}
+
 leadRoutes.get("/", requirePermission("lead:read"), async (c) => {
   const { tenantId } = c.get("caller");
+  const now = new Date();
+
+  const owner = alias(users, "owner_user");
+  const taker = alias(users, "taken_by_user");
+
   const rows = await db
-    .select()
+    .select({
+      lead: leads,
+      ownerName: owner.name,
+      takenByName: taker.name,
+    })
     .from(leads)
-    .where(eq(leads.tenantId, tenantId))
+    .leftJoin(owner, eq(leads.ownerUserId, owner.id))
+    .leftJoin(taker, eq(leads.takenByUserId, taker.id))
+    .where(and(eq(leads.tenantId, tenantId), notInArray(leads.stage, ["WON", "LOST"])))
     // FR-107: the default view is a dated follow-up queue, oldest first.
     .orderBy(asc(leads.nextFollowUpAt));
-  return c.json({ leads: rows });
+
+  /*
+    The last thing said, per lead. One query for the whole page rather than one
+    per row — §6.6.2 puts this on every row, so N+1 here is N+1 on every load.
+  */
+  const activity = rows.length
+    ? await db
+        .select({
+          leadId: leadActivities.leadId,
+          outcome: leadActivities.outcome,
+          note: leadActivities.note,
+          occurredAt: leadActivities.occurredAt,
+        })
+        .from(leadActivities)
+        .where(
+          and(
+            eq(leadActivities.tenantId, tenantId),
+            inArray(
+              leadActivities.leadId,
+              rows.map((r) => r.lead.id),
+            ),
+          ),
+        )
+        .orderBy(desc(leadActivities.occurredAt))
+    : [];
+
+  const latest = new Map<string, (typeof activity)[number]>();
+  for (const a of activity) if (!latest.has(a.leadId)) latest.set(a.leadId, a);
+
+  const out = rows.map(({ lead, ownerName, takenByName }) => {
+    const bucket = groupOf(lead.ownerUserId, lead.nextFollowUpAt, now);
+    const last = latest.get(lead.id);
+    return {
+      id: lead.id,
+      reference: lead.reference,
+      name: lead.name,
+      locality: lead.locality ?? "—",
+      phone: lead.phoneE164 ?? "",
+      stage: lead.stage,
+      ...bucket,
+      lastActivity: last
+        ? {
+            date: last.occurredAt.toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
+            text: last.note ? `${last.outcome} — ${last.note}` : last.outcome,
+          }
+        : null,
+      // §6.6.4: a quote that is not there renders `—`, never ₹0.
+      quotedPaise: lead.stage === "QUOTED" ? lead.quotedPaise : null,
+      quotedUnavailable: lead.stage === "QUOTED" && lead.quotedPaise === null,
+      owner: ownerName,
+      source: lead.source,
+      // FR-103: immutable, and shown as a real column rather than on hover (D6).
+      takenBy: takenByName ?? "—",
+    };
+  });
+
+  return c.json({
+    leads: out,
+    tomorrowCount: out.filter((l) => l.group === "tomorrow").length,
+  });
 });
 
 /**
@@ -153,6 +275,14 @@ leadRoutes.patch(
       ownerUserId: z.string().uuid().nullable().optional(),
       quotedPaise: z.number().int().positive().nullable().optional(),
       nextFollowUpAt: z.string().datetime().nullable().optional(),
+      /*
+        FR-104 asks for an outcome *and* a next date. The outcome used to be
+        accepted by the interface and dropped here, which left every row on the
+        queue rendering "Activity unavailable" — the screen's highest-value
+        element, permanently blank. A closed list, per §6.6.3.
+      */
+      outcome: z.enum(OUTCOMES).optional(),
+      note: z.string().max(500).optional(),
     }),
   ),
   async (c) => {
@@ -190,6 +320,16 @@ leadRoutes.patch(
       })
       .where(eq(leads.id, id))
       .returning();
+
+    if (body.outcome) {
+      await db.insert(leadActivities).values({
+        tenantId: caller.tenantId,
+        leadId: id,
+        outcome: body.outcome,
+        note: body.note ?? null,
+        actorUserId: caller.userId,
+      });
+    }
 
     await audit(caller, "UPDATE_LEAD", `${lead.reference} → ${body.stage ?? "updated"}`, {
       table: "leads",
