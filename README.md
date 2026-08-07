@@ -246,6 +246,26 @@ the caller still got a bare 500.
   be a composite supply or two things sold apart. The tax position belongs to
   the taxpayer, so the advisory never blocks.
 
+    GET /api/gst/:period          can I file this, and what is unresolved  FR-814
+    GET /api/gst/:period/export   tally | zoho | json — refuses if not ready
+
+### The GST workspace
+
+The one decision it serves is **can I file this period, and what is
+unresolved** — not "here are your numbers". The accountant already has numbers.
+What he has never had is a machine willing to say *no, and here is exactly why*.
+
+- **The export is blocked, not warned about.** A partial GST export produces a
+  return that looks filed and is wrong, and the taxpayer carries that.
+- **The tables are rebuilt from the lines** and then checked against the stored
+  invoice totals. If the two disagree, one of them is lying — and the
+  reconciliation names which side is short rather than reporting a cheerful
+  total. Verified: a ₹1 wrong line is caught and blocks the export.
+- **Every export carries its provenance** — source, period, branch, GSTIN, who
+  and when. A number whose filters are unknown cannot be defended in an
+  assessment, and the accountant is the one who will be asked.
+
 ## Still to build
 
-The GST period and exports, then pointing the web app at the API.
+Pointing the web app at the API, then retiring the browser store and the
+acting-as switcher.
