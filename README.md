@@ -192,7 +192,46 @@ record "reached site" when the job is already `ON_SITE`; validating the
 transition first answered that with a 409, and the app would treat a successful
 sync as a failure and retry forever.
 
+    GET/POST /api/invoices       place of supply from the site     FR-802
+    GET/POST /api/vendors        reverse charge + MSMED on the row  FR-705
+    POST /api/vendors/advise     what a bill would attract, and why
+    POST /api/vendors/bills      TDS recomputed, never trusted      FR-906
+    GET  /api/vendors/bills      savable and lost, apart            FR-905
+
+### Money, and what it refuses
+
+- **The place of supply is derived, never accepted.** It is not a field a
+  request may set. Charging CGST+SGST where IGST was due is the commonest and
+  most expensive GST error a small firm makes, and it is invisible until a
+  notice arrives — so it comes from the customer's own site, and the sentence
+  explaining it is stored on the invoice.
+- **Totals are computed here.** A client that sends its own `grandTotalPaise`
+  can round differently, and the register would stop agreeing with the returns.
+  The footing constraint in the database is the second line of defence.
+- **A customer with no site cannot be invoiced at all** — an invoice that
+  cannot state its own tax head must not be issued.
+- **TDS is recomputed on save**, not taken from the request. `/advise` exists so
+  the interface can show reverse charge and TDS *with their reasons* while the
+  reader types, and what it shows is what the server will apply — not a second
+  implementation in the browser that drifts.
+
+### Refusals read like sentences
+
+Every constraint in `0001_guards.sql` exists because a rule matters. When one
+fires the caller was stopped from doing something wrong, which is the system
+working — so it answers with the rule, not a 500:
+
+    409  That job has already been invoiced — a job bills once.
+    409  That contract instalment has already been raised.
+    409  That vendor's bill number is already recorded.
+
+Route groups are built with `apiRouter()` rather than `new Hono()`. Hono routes
+a thrown error to the `onError` of the instance it was thrown in, so a sub-app
+mounted with `route()` never reaches the parent's handler and a wrapping
+middleware never sees the rejection — the constraint fired, the rule worked, and
+the caller still got a bare 500.
+
 ## Still to build
 
-Invoices over the schema — where the sequence, the footing constraint and the
-place-of-supply derivation meet — then pointing the web app at the API.
+Advances and receipt vouchers, the GST period and exports, then pointing the web
+app at the API.

@@ -1,10 +1,10 @@
-import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { and, asc, eq } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import { customers, sites } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
+import { apiRouter } from "../lib/router.ts";
 import { audit } from "../lib/audit.ts";
 
 /**
@@ -19,7 +19,7 @@ import { audit } from "../lib/audit.ts";
  * is the whole isolation model: the tenant comes off the token, so a handler
  * cannot be written without it.
  */
-export const customerRoutes = new Hono<AppEnv>();
+export const customerRoutes = apiRouter();
 
 customerRoutes.get("/", requirePermission("customer:read"), async (c) => {
   const { tenantId } = c.get("caller");

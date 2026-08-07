@@ -1,4 +1,3 @@
-import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -18,6 +17,7 @@ import {
   stripFields,
   type AppEnv,
 } from "../auth/context.ts";
+import { apiRouter } from "../lib/router.ts";
 import { can } from "../auth/roles.ts";
 import { formatNumber, nextInSeries } from "../lib/series.ts";
 import { audit } from "../lib/audit.ts";
@@ -33,7 +33,7 @@ import { audit } from "../lib/audit.ts";
  * The site is a foreign key, not a typed locality. That is what makes the place
  * of supply — and therefore the tax head — derivable at all.
  */
-export const jobRoutes = new Hono<AppEnv>();
+export const jobRoutes = apiRouter();
 
 jobRoutes.get("/", async (c) => {
   const caller = c.get("caller");

@@ -1,10 +1,10 @@
-import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { and, asc, count, eq } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import { contacts, customers, jobs, leads, sites } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
+import { apiRouter } from "../lib/router.ts";
 import { e164 } from "../lib/phone.ts";
 import { formatNumber, nextInSeries } from "../lib/series.ts";
 import { audit } from "../lib/audit.ts";
@@ -21,7 +21,7 @@ import { audit } from "../lib/audit.ts";
  * - **FR-104.** A lead with no next date gets forgotten, so the date is
  *   required and must be in the future. A past date is not a follow-up.
  */
-export const leadRoutes = new Hono<AppEnv>();
+export const leadRoutes = apiRouter();
 
 /** FR-105 — a closed list. Free text here becomes an unanalysable funnel. */
 const SOURCES = [

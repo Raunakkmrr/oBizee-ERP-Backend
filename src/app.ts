@@ -4,7 +4,10 @@ import { customerRoutes } from "./routes/customers.ts";
 import { jobRoutes } from "./routes/jobs.ts";
 import { leadRoutes } from "./routes/leads.ts";
 import { contractRoutes } from "./routes/contracts.ts";
+import { invoiceRoutes } from "./routes/invoices.ts";
+import { vendorRoutes } from "./routes/vendors.ts";
 import { requireCaller, type AppEnv } from "./auth/context.ts";
+import { handleError } from "./lib/errors.ts";
 
 /**
  * The application.
@@ -25,6 +28,8 @@ app.route("/api/customers", customerRoutes);
 app.route("/api/jobs", jobRoutes);
 app.route("/api/leads", leadRoutes);
 app.route("/api/contracts", contractRoutes);
+app.route("/api/invoices", invoiceRoutes);
+app.route("/api/vendors", vendorRoutes);
 
 app.get("/api/me", (c) => {
   const caller = c.get("caller");
@@ -35,3 +40,13 @@ app.get("/api/me", (c) => {
     tenantId: caller.tenantId,
   });
 });
+
+/**
+ * One place where a database refusal becomes a readable answer.
+ *
+ * Hono's default turns any thrown error into a bare 500 "Internal Server
+ * Error". A constraint firing is the opposite of an internal error — it is the
+ * system stopping somebody from doing something wrong — and it deserves a
+ * sentence naming the rule.
+ */
+app.onError(handleError);

@@ -1,10 +1,10 @@
-import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import { branches, contractSchedules, contracts, customers, jobs, sites } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
+import { apiRouter } from "../lib/router.ts";
 import { formatNumber, nextInSeries } from "../lib/series.ts";
 import { VISITS_PER_YEAR, isoDay, visitSchedule, type Recurrence } from "../lib/visits.ts";
 import { audit } from "../lib/audit.ts";
@@ -20,7 +20,7 @@ import { audit } from "../lib/audit.ts";
  * FR-1406: a contract may carry several schedules, each with its own scope and
  * cadence. Six cassette ACs monthly and two chillers quarterly is one contract.
  */
-export const contractRoutes = new Hono<AppEnv>();
+export const contractRoutes = apiRouter();
 
 const RECURRENCES = [
   "WEEKLY", "FORTNIGHTLY", "MONTHLY", "ALTERNATE_MONTHLY",
