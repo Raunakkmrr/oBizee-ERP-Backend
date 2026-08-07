@@ -1,3 +1,26 @@
+CREATE TYPE "public"."advance_status" AS ENUM('OPEN', 'ADJUSTED');--> statement-breakpoint
+CREATE TYPE "public"."asset_condition" AS ENUM('GOOD', 'NEEDS_ATTENTION', 'CRITICAL');--> statement-breakpoint
+CREATE TYPE "public"."audit_origin" AS ENUM('web', 'offline_sync');--> statement-breakpoint
+CREATE TYPE "public"."billing_frequency" AS ENUM('UPFRONT_ANNUAL', 'HALF_YEARLY', 'QUARTERLY', 'MONTHLY', 'PER_VISIT');--> statement-breakpoint
+CREATE TYPE "public"."contact_role" AS ENUM('OWNER', 'MANAGER', 'SECURITY', 'ACCOUNTS', 'OTHER');--> statement-breakpoint
+CREATE TYPE "public"."contract_status" AS ENUM('DRAFT', 'ACTIVE', 'SUSPENDED', 'EXPIRED');--> statement-breakpoint
+CREATE TYPE "public"."coverage" AS ENUM('COMPREHENSIVE', 'NON_COMPREHENSIVE', 'LABOUR_ONLY');--> statement-breakpoint
+CREATE TYPE "public"."customer_type" AS ENUM('INDIVIDUAL', 'BUSINESS');--> statement-breakpoint
+CREATE TYPE "public"."doc_type" AS ENUM('job', 'invoice', 'receipt_voucher');--> statement-breakpoint
+CREATE TYPE "public"."invoice_status" AS ENUM('DRAFT', 'ISSUED', 'CANCELLED');--> statement-breakpoint
+CREATE TYPE "public"."job_status" AS ENUM('CREATED', 'ASSIGNED', 'EN_ROUTE', 'ON_SITE', 'PARTS_AWAITED', 'CUSTOMER_UNAVAILABLE', 'WORK_DONE', 'SIGNED_OFF', 'CANCELLED');--> statement-breakpoint
+CREATE TYPE "public"."lead_stage" AS ENUM('NEW', 'CONTACTED', 'QUOTED', 'WON', 'LOST');--> statement-breakpoint
+CREATE TYPE "public"."line_kind" AS ENUM('service', 'goods');--> statement-breakpoint
+CREATE TYPE "public"."msme_class" AS ENUM('MICRO', 'SMALL', 'MEDIUM', 'NOT_REGISTERED', 'UNVERIFIED');--> statement-breakpoint
+CREATE TYPE "public"."pan_type" AS ENUM('INDIVIDUAL_HUF', 'COMPANY_FIRM_OTHER');--> statement-breakpoint
+CREATE TYPE "public"."priority" AS ENUM('normal', 'urgent', 'breakdown');--> statement-breakpoint
+CREATE TYPE "public"."purchase_status" AS ENUM('UNPAID', 'PAID');--> statement-breakpoint
+CREATE TYPE "public"."recurrence" AS ENUM('WEEKLY', 'FORTNIGHTLY', 'MONTHLY', 'ALTERNATE_MONTHLY', 'QUARTERLY', 'HALF_YEARLY', 'ANNUAL');--> statement-breakpoint
+CREATE TYPE "public"."reschedule_policy" AS ENUM('SHIFT_SUBSEQUENT', 'KEEP_SCHEDULE');--> statement-breakpoint
+CREATE TYPE "public"."role" AS ENUM('owner', 'coordinator', 'marketing', 'technician', 'accountant', 'readonly_ca');--> statement-breakpoint
+CREATE TYPE "public"."tax_head" AS ENUM('CGST_SGST', 'IGST');--> statement-breakpoint
+CREATE TYPE "public"."tds_section" AS ENUM('194C', '194J', 'NONE');--> statement-breakpoint
+CREATE TYPE "public"."udyam_activity" AS ENUM('MANUFACTURING', 'SERVICE', 'TRADING');--> statement-breakpoint
 CREATE TABLE "advances" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,

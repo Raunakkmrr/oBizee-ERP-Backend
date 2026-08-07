@@ -16,6 +16,16 @@ import {
 import * as e from "./enums.js";
 
 /**
+ * Re-exported so drizzle-kit sees them.
+ *
+ * It introspects only what the schema entry file exports. Importing the enums
+ * with `import * as e` used them in column definitions but left them invisible
+ * to generation, so the first migration created tables referencing types it had
+ * never created — `type "tax_head" does not exist`, on statement 1 of 98.
+ */
+export * from "./enums.js";
+
+/**
  * oBizee Service ERP — the schema.
  *
  * Ported from `obez-erp-web/src/lib/data/*`, which was written frontend-first

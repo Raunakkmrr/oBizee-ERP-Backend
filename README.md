@@ -6,12 +6,32 @@ Ported from `obez-erp-web/src/lib/data/*`, which was written frontend-first and
 became the de-facto specification. `../obez-erp-docs/ERD.md` records what the
 schema changed on the way across and why.
 
-## Getting a database
+## The database
 
-Neon, one project per environment. Copy the pooled connection string into
-`.env`:
+Neon project `obizee-erp`, branch `production`, **Postgres 16** in
+`ap-southeast-1` (Singapore). 16 rather than the newer default so it matches the
+local instance on port 5433 exactly — a version gap between development and
+staging is a class of bug that costs hours and teaches nothing.
 
-    DATABASE_URL=postgresql://...neon.tech/obizee_erp?sslmode=require
+Neon Auth is off. Identity is ours, in our own tables.
+
+Copy `.env.example` to `.env` and fill both values. `DATABASE_URL` is the
+**pooled** string from Dashboard → Connect.
+
+## Verified against the real database
+
+Every guard below was executed, not assumed:
+
+    tables: 24 | enums: 23
+
+    FR-811   20 concurrent next_in_series() calls returned 1..20,
+             no duplicate and no gap
+    FR-804   UPDATE and DELETE on rate_rows both refused
+    FR-1305  DELETE on audit_entries refused
+    FR-812   a total that does not add up is refused
+             a total that is not whole rupees is refused
+    §31      a duplicate invoice number in the same branch and year is refused
+             a user with neither phone nor email is refused
 
 ## Commands
 

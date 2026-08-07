@@ -1,5 +1,5 @@
 {
-  "id": "0a6e190b-7d94-46e7-8df7-c0ba73f9dbc9",
+  "id": "4027b515-10d6-4766-9b90-dc9f1c8b58d6",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -3163,7 +3163,229 @@
       "isRLSEnabled": false
     }
   },
-  "enums": {},
+  "enums": {
+    "public.advance_status": {
+      "name": "advance_status",
+      "schema": "public",
+      "values": [
+        "OPEN",
+        "ADJUSTED"
+      ]
+    },
+    "public.asset_condition": {
+      "name": "asset_condition",
+      "schema": "public",
+      "values": [
+        "GOOD",
+        "NEEDS_ATTENTION",
+        "CRITICAL"
+      ]
+    },
+    "public.audit_origin": {
+      "name": "audit_origin",
+      "schema": "public",
+      "values": [
+        "web",
+        "offline_sync"
+      ]
+    },
+    "public.billing_frequency": {
+      "name": "billing_frequency",
+      "schema": "public",
+      "values": [
+        "UPFRONT_ANNUAL",
+        "HALF_YEARLY",
+        "QUARTERLY",
+        "MONTHLY",
+        "PER_VISIT"
+      ]
+    },
+    "public.contact_role": {
+      "name": "contact_role",
+      "schema": "public",
+      "values": [
+        "OWNER",
+        "MANAGER",
+        "SECURITY",
+        "ACCOUNTS",
+        "OTHER"
+      ]
+    },
+    "public.contract_status": {
+      "name": "contract_status",
+      "schema": "public",
+      "values": [
+        "DRAFT",
+        "ACTIVE",
+        "SUSPENDED",
+        "EXPIRED"
+      ]
+    },
+    "public.coverage": {
+      "name": "coverage",
+      "schema": "public",
+      "values": [
+        "COMPREHENSIVE",
+        "NON_COMPREHENSIVE",
+        "LABOUR_ONLY"
+      ]
+    },
+    "public.customer_type": {
+      "name": "customer_type",
+      "schema": "public",
+      "values": [
+        "INDIVIDUAL",
+        "BUSINESS"
+      ]
+    },
+    "public.doc_type": {
+      "name": "doc_type",
+      "schema": "public",
+      "values": [
+        "job",
+        "invoice",
+        "receipt_voucher"
+      ]
+    },
+    "public.invoice_status": {
+      "name": "invoice_status",
+      "schema": "public",
+      "values": [
+        "DRAFT",
+        "ISSUED",
+        "CANCELLED"
+      ]
+    },
+    "public.job_status": {
+      "name": "job_status",
+      "schema": "public",
+      "values": [
+        "CREATED",
+        "ASSIGNED",
+        "EN_ROUTE",
+        "ON_SITE",
+        "PARTS_AWAITED",
+        "CUSTOMER_UNAVAILABLE",
+        "WORK_DONE",
+        "SIGNED_OFF",
+        "CANCELLED"
+      ]
+    },
+    "public.lead_stage": {
+      "name": "lead_stage",
+      "schema": "public",
+      "values": [
+        "NEW",
+        "CONTACTED",
+        "QUOTED",
+        "WON",
+        "LOST"
+      ]
+    },
+    "public.line_kind": {
+      "name": "line_kind",
+      "schema": "public",
+      "values": [
+        "service",
+        "goods"
+      ]
+    },
+    "public.msme_class": {
+      "name": "msme_class",
+      "schema": "public",
+      "values": [
+        "MICRO",
+        "SMALL",
+        "MEDIUM",
+        "NOT_REGISTERED",
+        "UNVERIFIED"
+      ]
+    },
+    "public.pan_type": {
+      "name": "pan_type",
+      "schema": "public",
+      "values": [
+        "INDIVIDUAL_HUF",
+        "COMPANY_FIRM_OTHER"
+      ]
+    },
+    "public.priority": {
+      "name": "priority",
+      "schema": "public",
+      "values": [
+        "normal",
+        "urgent",
+        "breakdown"
+      ]
+    },
+    "public.purchase_status": {
+      "name": "purchase_status",
+      "schema": "public",
+      "values": [
+        "UNPAID",
+        "PAID"
+      ]
+    },
+    "public.recurrence": {
+      "name": "recurrence",
+      "schema": "public",
+      "values": [
+        "WEEKLY",
+        "FORTNIGHTLY",
+        "MONTHLY",
+        "ALTERNATE_MONTHLY",
+        "QUARTERLY",
+        "HALF_YEARLY",
+        "ANNUAL"
+      ]
+    },
+    "public.reschedule_policy": {
+      "name": "reschedule_policy",
+      "schema": "public",
+      "values": [
+        "SHIFT_SUBSEQUENT",
+        "KEEP_SCHEDULE"
+      ]
+    },
+    "public.role": {
+      "name": "role",
+      "schema": "public",
+      "values": [
+        "owner",
+        "coordinator",
+        "marketing",
+        "technician",
+        "accountant",
+        "readonly_ca"
+      ]
+    },
+    "public.tax_head": {
+      "name": "tax_head",
+      "schema": "public",
+      "values": [
+        "CGST_SGST",
+        "IGST"
+      ]
+    },
+    "public.tds_section": {
+      "name": "tds_section",
+      "schema": "public",
+      "values": [
+        "194C",
+        "194J",
+        "NONE"
+      ]
+    },
+    "public.udyam_activity": {
+      "name": "udyam_activity",
+      "schema": "public",
+      "values": [
+        "MANUFACTURING",
+        "SERVICE",
+        "TRADING"
+      ]
+    }
+  },
   "schemas": {},
   "sequences": {},
   "roles": {},
