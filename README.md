@@ -43,9 +43,27 @@ Every one of these was a convention in the frontend store — a comment, or a
 | `invoices_foots_exactly` + `invoices_whole_rupees` | FR-812, asserted by the database |
 | `job_events_client_uuid_uq` | FR-303. The technician app's replay is idempotent |
 
+## Authorisation
+
+`src/auth/roles.ts` is **the** permission table. The identical file in
+`obez-erp-web/src/lib/roles.ts` is a mirror so the interface can grey out a
+control before it is clicked; if the two disagree, this one wins. `pnpm test`
+compares them byte for byte whenever the web repo is checked out beside this
+one.
+
+The rule, stated once: **a permission check in the browser shapes the interface;
+a permission check here is security.** Both are needed, neither substitutes.
+
+| Piece | What it does |
+|---|---|
+| `requireCaller` | Resolves the caller from a bearer token. No anonymous mode, no "assume owner" fallback. Public routes mount *before* it, so being public is a decision |
+| `requirePermission(p)` | Refuses with the permission and the role named — the reader is usually a colleague who needs to know who to ask |
+| `stripFields` | FR-1302. Deletes the key rather than hiding it: a hidden price is still in the JSON |
+
+The tenant comes off the token and never from a parameter, so a handler cannot
+forget to scope a query.
+
 ## Still to build
 
-Sign-in (phone OTP for field staff, email and password for the office), the
-request layer, and per-request tenant scoping. The role and permission model
-already exists in `obez-erp-web/src/lib/roles.ts` and should be imported rather
-than re-declared — two permission tables always drift, and the drift is silent.
+Sign-in itself — phone and OTP for field staff, email and password for the
+office — the route layer over the schema, and refresh-token rotation.
