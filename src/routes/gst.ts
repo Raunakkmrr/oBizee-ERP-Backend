@@ -33,6 +33,54 @@ type Table = {
   documents: number;
   taxablePaise: number;
   taxPaise: number;
+  /**
+   * §6.14's partial state. A table that could not be computed shows an inline
+   * error and disables the export with the reason named — it is never silently
+   * treated as zero, which would file a wrong return that looks complete.
+   */
+  failed: boolean;
+};
+
+/**
+ * What is unresolved in this period, by kind — §6.14.
+ *
+ * Not every unresolved thing blocks a return, and the previous binary
+ * ready/blocked shape said otherwise: a place-of-supply override is
+ * **legitimate and stored with a reason**, and folding it in with a missing
+ * HSN code meant a correctly-documented override refused to export. Some of
+ * these need review before filing; only some make the return wrong.
+ */
+const READINESS_KINDS = [
+  "MISSING_CODE",
+  "OVERRIDDEN_POS",
+  "UNADJUSTED_ADVANCE",
+  "CREDIT_NOTE",
+  "RCM_INWARD",
+  "PENDING_IRN",
+  "B2C_SMALL",
+] as const;
+
+type ReadinessKind = (typeof READINESS_KINDS)[number];
+
+/** Mirrors the web app's `BLOCKS_EXPORT` — the export gate reads this. */
+export const BLOCKS_EXPORT: Record<ReadinessKind, boolean> = {
+  MISSING_CODE: true,
+  OVERRIDDEN_POS: false,
+  UNADJUSTED_ADVANCE: true,
+  CREDIT_NOTE: false,
+  RCM_INWARD: false,
+  PENDING_IRN: true,
+  B2C_SMALL: false,
+};
+
+const READINESS_HREF: Record<ReadinessKind, string> = {
+  MISSING_CODE: "/invoices?filter=missing-code",
+  OVERRIDDEN_POS: "/invoices?filter=pos-override",
+  UNADJUSTED_ADVANCE: "/money?tab=advances",
+  CREDIT_NOTE: "/invoices?filter=credit-notes",
+  RCM_INWARD: "/purchases?filter=rcm",
+  PENDING_IRN: "/invoices?filter=pending-irn",
+  B2C_SMALL: "/gst?table=b2cs",
 };
 
 function periodBounds(period: string): { from: string; to: string; label: string } {
@@ -70,6 +118,7 @@ export async function gstPeriod(tenantId: string, period: string) {
         grandTotalPaise: invoices.grandTotalPaise,
         customerName: customers.name,
         customerGstin: customers.gstin,
+        placeOfSupplyOverrideReason: invoices.placeOfSupplyOverrideReason,
       })
       .from(invoices)
       .innerJoin(customers, eq(invoices.customerId, customers.id))
@@ -97,8 +146,19 @@ export async function gstPeriod(tenantId: string, period: string) {
       only in a summary.
     */
     const tables: Record<string, Table> = {
-      B2B: { code: "B2B", label: "Registered customers", documents: 0, taxablePaise: 0, taxPaise: 0 },
-      B2CS: { code: "B2CS", label: "Unregistered, summary", documents: 0, taxablePaise: 0, taxPaise: 0 },
+      B2B: { code: "B2B", label: "Registered customers", documents: 0, taxablePaise: 0, taxPaise: 0, failed: false },
+      B2CS: { code: "B2CS", label: "Unregistered, summary", documents: 0, taxablePaise: 0, taxPaise: 0, failed: false },
+    };
+
+    // Counted by kind, so the checklist can say "4 invoices" and link to them.
+    const unresolved: Record<ReadinessKind, number> = {
+      MISSING_CODE: 0,
+      OVERRIDDEN_POS: 0,
+      UNADJUSTED_ADVANCE: 0,
+      CREDIT_NOTE: 0,
+      RCM_INWARD: 0,
+      PENDING_IRN: 0,
+      B2C_SMALL: 0,
     };
 
     const blocking: { invoice: string; reason: string; href: string }[] = [];
@@ -111,8 +171,16 @@ export async function gstPeriod(tenantId: string, period: string) {
       registerTaxable += invoice.taxablePaise;
       registerTax += invoice.totalTaxPaise;
 
+      if (invoice.placeOfSupplyOverrideReason) unresolved.OVERRIDDEN_POS += 1;
+
       const own = linesByInvoice.get(invoice.id) ?? [];
+      // A missing HSN/SAC code is the one that actually makes the return wrong.
+      if (own.some((l) => !l.code || l.code.trim() === "")) unresolved.MISSING_CODE += 1;
+
       if (own.length === 0) {
+        unresolved.MISSING_CODE += 1;
+        tables.B2B!.failed = true;
+        tables.B2CS!.failed = true;
         blocking.push({
           invoice: invoice.number,
           reason: "has no lines, so nothing can be reported for it",
@@ -144,6 +212,8 @@ export async function gstPeriod(tenantId: string, period: string) {
       bucket.taxablePaise += totals.taxablePaise;
       bucket.taxPaise += totals.totalTaxPaise;
 
+      if (invoice.customerGstin === null) unresolved.B2C_SMALL += 1;
+
       if (invoice.customerGstin === null && invoice.grandTotalPaise > 2_50_000_00) {
         // A B2C supply above ₹2.5 lakh is reported as B2CL with the place of
         // supply, which needs the customer's state — not a summary line.
@@ -154,6 +224,7 @@ export async function gstPeriod(tenantId: string, period: string) {
         });
       }
       if (invoice.status === "DRAFT") {
+        unresolved.PENDING_IRN += 1;
         blocking.push({
           invoice: invoice.number,
           reason: "is still a draft",
@@ -172,6 +243,10 @@ export async function gstPeriod(tenantId: string, period: string) {
     const taxDeltaPaise = recomputedTax - registerTax;
     const foots = taxableDeltaPaise === 0 && taxDeltaPaise === 0;
     if (!foots) {
+      // The tables are the side that was recomputed, so they are the side that
+      // must declare itself untrustworthy.
+      tables.B2B!.failed = true;
+      tables.B2CS!.failed = true;
       blocking.push({
         invoice: "—",
         reason: `the working paper and the invoice register disagree by ${(
@@ -181,8 +256,15 @@ export async function gstPeriod(tenantId: string, period: string) {
       });
     }
 
+    const readiness = READINESS_KINDS.filter((kind) => unresolved[kind] > 0).map((kind) => ({
+      kind,
+      count: unresolved[kind],
+      href: READINESS_HREF[kind],
+    }));
+
     return {
-      period: label,
+      periodLabel: label,
+      period,
       from,
       to,
       registerTaxablePaise: registerTaxable,
@@ -190,10 +272,15 @@ export async function gstPeriod(tenantId: string, period: string) {
       registerDocuments: rows.length,
       tables: Object.values(tables),
       reconciliation: { foots, taxableDeltaPaise, taxDeltaPaise },
-      readiness:
-        blocking.length === 0
-          ? { kind: "ready" as const }
-          : { kind: "blocked" as const, reasons: blocking },
+      readiness,
+      /*
+        The export gate, kept separate from the checklist. `readiness` is what
+        the accountant reads; this is what the export obeys. A period is
+        blocked when something makes the return *wrong* — not merely when
+        something needs a look.
+      */
+      blocked: blocking.length > 0 || readiness.some((r) => BLOCKS_EXPORT[r.kind]),
+      blockingReasons: blocking,
     };
 }
 
@@ -229,11 +316,12 @@ gstRoutes.get(
 
     const summary = await gstPeriod(caller.tenantId, c.req.param("period"));
 
-    if (summary.readiness.kind !== "ready") {
+    if (summary.blocked) {
       return c.json(
         {
           error: "This period is not ready to file, so it will not export",
-          readiness: summary.readiness,
+          readiness: summary.readiness.filter((r) => BLOCKS_EXPORT[r.kind]),
+          reasons: summary.blockingReasons,
         },
         409,
       );
