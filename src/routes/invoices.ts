@@ -7,7 +7,13 @@ import {
 } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
-import { codeForAato, computeTotals, derivePlaceOfSupply, type InvoiceLine } from "../lib/tax.ts";
+import {
+  adviseSupply,
+  codeForAato,
+  computeTotals,
+  derivePlaceOfSupply,
+  type InvoiceLine,
+} from "../lib/tax.ts";
 import { financialYear, formatNumber, nextInSeries } from "../lib/series.ts";
 import { audit } from "../lib/audit.ts";
 
@@ -251,6 +257,12 @@ invoiceRoutes.post(
       id: invoice!.id,
     });
 
-    return c.json({ ...invoice, lines }, 201);
+    /*
+      FR-806 — advisory, never blocking. Goods and services at different rates
+      on one invoice may be a composite supply taking the principal rate, or
+      two things genuinely sold apart. The tax position belongs to the taxpayer,
+      not to the software, so this asks rather than decides.
+    */
+    return c.json({ ...invoice, lines, supplyAdvice: adviseSupply(lines) }, 201);
   },
 );

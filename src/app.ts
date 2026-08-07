@@ -6,6 +6,8 @@ import { leadRoutes } from "./routes/leads.ts";
 import { contractRoutes } from "./routes/contracts.ts";
 import { invoiceRoutes } from "./routes/invoices.ts";
 import { vendorRoutes } from "./routes/vendors.ts";
+import { advanceRoutes } from "./routes/advances.ts";
+import { paymentRoutes } from "./routes/payments.ts";
 import { requireCaller, type AppEnv } from "./auth/context.ts";
 import { handleError } from "./lib/errors.ts";
 
@@ -30,6 +32,8 @@ app.route("/api/leads", leadRoutes);
 app.route("/api/contracts", contractRoutes);
 app.route("/api/invoices", invoiceRoutes);
 app.route("/api/vendors", vendorRoutes);
+app.route("/api/advances", advanceRoutes);
+app.route("/api/payments", paymentRoutes);
 
 app.get("/api/me", (c) => {
   const caller = c.get("caller");

@@ -231,7 +231,21 @@ mounted with `route()` never reaches the parent's handler and a wrapping
 middleware never sees the rejection — the constraint fired, the rule worked, and
 the caller still got a bare 500.
 
+    GET/POST /api/advances            Receipt Voucher, own series   FR-810
+    POST /api/advances/:id/adjust     once only
+    POST /api/payments                partial is normal             FR-901
+    GET  /api/payments/receivables    six buckets, §43B(h) flagged  FR-903
+
+- **An advance's tax is back-calculated, not grossed up.** A customer paying
+  "₹3,60,000 for the year" pays a gross figure; they have not separately handed
+  over 18%. Grossing up collects tax the customer never sent.
+- **An invoice's balance is derived from its payments**, never a status field
+  somebody has to remember to flip. Overpayment is refused rather than
+  reconciled later — an overpaid invoice is a credit note nobody raised.
+- **FR-806 asks, it does not decide.** Goods and services at different rates may
+  be a composite supply or two things sold apart. The tax position belongs to
+  the taxpayer, so the advisory never blocks.
+
 ## Still to build
 
-Advances and receipt vouchers, the GST period and exports, then pointing the web
-app at the API.
+The GST period and exports, then pointing the web app at the API.
