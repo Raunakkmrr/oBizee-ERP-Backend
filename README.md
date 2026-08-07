@@ -154,6 +154,19 @@ Nothing in it is random; every row exercises a rule:
     POST /api/customers          customer + first site in one call
     GET  /api/jobs               scoped by role — see below
     POST /api/jobs               takes its number from the atomic sequence
+    POST /api/jobs/:id/assign       primary + helpers        FR-205
+    POST /api/jobs/:id/reschedule   same job, attempt + 1    FR-206
+    POST /api/jobs/:id/transition   explicit state table     FR-303
+
+    GET  /api/leads              dated follow-up queue       FR-107
+    GET  /api/leads/lookup       duplicate detection         FR-102
+    POST /api/leads              closed source list          FR-101, FR-105
+    PATCH /api/leads/:id         taken_by is immutable       FR-103, FR-104
+    POST /api/leads/:id/convert  customer + site + job       FR-106
+
+    GET  /api/contracts          with their schedules        FR-1406
+    POST /api/contracts          visits and billing are separate axes  FR-505
+    POST /api/contracts/:id/generate-visits   idempotent     FR-502
 
 Two rules the jobs list enforces that are easy to get wrong:
 
@@ -163,6 +176,23 @@ Two rules the jobs list enforces that are easy to get wrong:
 - **FR-1302** — prices are removed from the payload, not hidden in it. A
   technician's response has no `valuePaise` key at all.
 
+### Transitions and replay
+
+State moves are an explicit table, not any-status-to-any-status: a job cannot
+jump from `ASSIGNED` to `SIGNED_OFF`, because the reason a state exists is that
+something happened.
+
+Only the **primary** technician may transition from the field. A helper is on
+the job sheet and counts at half weight in workload; he does not record what
+happened. One person owns the account of a visit.
+
+**FR-303 — a replayed write is not an error.** The `clientUuid` check runs
+*before* the transition table. An offline queue replayed on reconnect tries to
+record "reached site" when the job is already `ON_SITE`; validating the
+transition first answered that with a 409, and the app would treat a successful
+sync as a failure and retry forever.
+
 ## Still to build
 
-Invoices and contracts over the schema, then pointing the web app at the API.
+Invoices over the schema — where the sequence, the footing constraint and the
+place-of-supply derivation meet — then pointing the web app at the API.

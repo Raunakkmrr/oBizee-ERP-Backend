@@ -1,9 +1,17 @@
 import { Hono } from "hono";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../db/client.ts";
-import { branches, customers, jobs, sites } from "../db/schema.ts";
+import {
+  branches,
+  customers,
+  jobEvents,
+  jobHelpers,
+  jobs,
+  sites,
+  users,
+} from "../db/schema.ts";
 import {
   PRICE_FIELDS,
   requirePermission,
@@ -161,5 +169,253 @@ jobRoutes.post(
     });
 
     return c.json(job, 201);
+  },
+);
+
+/* --------------------------------------------------------------- mutations */
+
+const assignBody = z.object({
+  primaryTechnicianId: z.string().uuid().nullable(),
+  /** FR-205: any number, counted at half weight in workload. */
+  helperIds: z.array(z.string().uuid()).max(6).default([]),
+});
+
+jobRoutes.post(
+  "/:id/assign",
+  requirePermission("job:dispatch"),
+  zValidator("json", assignBody),
+  async (c) => {
+    const caller = c.get("caller");
+    const id = c.req.param("id");
+    const body = c.req.valid("json");
+
+    const [job] = await db
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.id, id), eq(jobs.tenantId, caller.tenantId)))
+      .limit(1);
+    if (!job) return c.json({ error: "No such job" }, 404);
+
+    // Everyone named must be an active technician in this tenant. Without the
+    // check a dispatcher could assign a job to another firm's staff.
+    const named = [body.primaryTechnicianId, ...body.helperIds].filter(
+      (x): x is string => x !== null,
+    );
+    if (named.length > 0) {
+      const found = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(
+          and(
+            eq(users.tenantId, caller.tenantId),
+            eq(users.role, "technician"),
+            eq(users.active, true),
+            inArray(users.id, named),
+          ),
+        );
+      if (found.length !== new Set(named).size) {
+        return c.json({ error: "Someone named is not an active technician here" }, 400);
+      }
+    }
+
+    const [updated] = await db
+      .update(jobs)
+      .set({
+        primaryTechnicianId: body.primaryTechnicianId,
+        // Assigning does not un-start a job that is already moving.
+        status: job.status === "CREATED" && body.primaryTechnicianId ? "ASSIGNED" : job.status,
+      })
+      .where(eq(jobs.id, id))
+      .returning();
+
+    await db.delete(jobHelpers).where(eq(jobHelpers.jobId, id));
+    if (body.helperIds.length > 0) {
+      await db
+        .insert(jobHelpers)
+        .values(body.helperIds.map((userId) => ({ jobId: id, userId })));
+    }
+
+    await audit(caller, "ASSIGN_JOB", `Assigned ${job.jobNumber}`, {
+      table: "jobs",
+      id,
+    });
+    return c.json(updated);
+  },
+);
+
+/**
+ * FR-206 — rescheduling preserves the job and counts the attempt.
+ *
+ * A new job would lose the history and make "second visit" uncountable. The
+ * attempt counter is what tells a coordinator this is a customer already let
+ * down once.
+ */
+jobRoutes.post(
+  "/:id/reschedule",
+  requirePermission("job:write"),
+  zValidator(
+    "json",
+    z.object({
+      scheduledDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      slot: z.enum(["9-1", "1-5", "5-8"]).optional(),
+      reason: z.string().trim().min(3),
+    }),
+  ),
+  async (c) => {
+    const caller = c.get("caller");
+    const id = c.req.param("id");
+    const body = c.req.valid("json");
+
+    const [job] = await db
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.id, id), eq(jobs.tenantId, caller.tenantId)))
+      .limit(1);
+    if (!job) return c.json({ error: "No such job" }, 404);
+
+    const [updated] = await db
+      .update(jobs)
+      .set({
+        scheduledDate: body.scheduledDate,
+        slot: body.slot ?? job.slot,
+        visitAttempt: job.visitAttempt + 1,
+      })
+      .where(eq(jobs.id, id))
+      .returning();
+
+    await audit(
+      caller,
+      "RESCHEDULE_JOB",
+      `Moved ${job.jobNumber} to ${body.scheduledDate} — ${body.reason}`,
+      { table: "jobs", id },
+    );
+    return c.json(updated);
+  },
+);
+
+/**
+ * State transitions — FR-205, FR-208.
+ *
+ * **Only the primary technician may transition from the field.** A helper
+ * cannot, and a coordinator moving a job on a technician's behalf is a
+ * different act with a different audit line. The transition table is explicit
+ * rather than "any status to any status": a job cannot jump from CREATED to
+ * SIGNED_OFF, and the reason a state exists is that something happened.
+ */
+const NEXT: Record<string, readonly string[]> = {
+  CREATED: ["ASSIGNED", "CANCELLED"],
+  ASSIGNED: ["EN_ROUTE", "CUSTOMER_UNAVAILABLE", "CANCELLED"],
+  EN_ROUTE: ["ON_SITE", "CUSTOMER_UNAVAILABLE"],
+  ON_SITE: ["WORK_DONE", "PARTS_AWAITED", "CUSTOMER_UNAVAILABLE"],
+  PARTS_AWAITED: ["ASSIGNED", "ON_SITE", "CANCELLED"],
+  CUSTOMER_UNAVAILABLE: ["ASSIGNED", "CANCELLED"],
+  WORK_DONE: ["SIGNED_OFF"],
+  SIGNED_OFF: [],
+  CANCELLED: [],
+};
+
+jobRoutes.post(
+  "/:id/transition",
+  zValidator(
+    "json",
+    z.object({
+      to: z.enum([
+        "ASSIGNED", "EN_ROUTE", "ON_SITE", "PARTS_AWAITED",
+        "CUSTOMER_UNAVAILABLE", "WORK_DONE", "SIGNED_OFF", "CANCELLED",
+      ]),
+      /** When it happened on the ground — not when it reached us. */
+      occurredAt: z.string().datetime().optional(),
+      note: z.string().optional(),
+      /** FR-303: the technician app's replay key. */
+      clientUuid: z.string().uuid().optional(),
+    }),
+  ),
+  async (c) => {
+    const caller = c.get("caller");
+    const id = c.req.param("id");
+    const body = c.req.valid("json");
+
+    const [job] = await db
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.id, id), eq(jobs.tenantId, caller.tenantId)))
+      .limit(1);
+    if (!job) return c.json({ error: "No such job" }, 404);
+
+    const fromField = caller.role === "technician";
+    if (fromField && job.primaryTechnicianId !== caller.userId) {
+      // A helper is on the job sheet and counts at half weight; he does not
+      // record what happened. One person owns the account of a visit.
+      return c.json({ error: "Only the primary technician can record this" }, 403);
+    }
+    if (!fromField && !can(caller.role, "job:write", undefined, caller.level)) {
+      return c.json({ error: `A ${caller.role} cannot do this`, needs: "job:write" }, 403);
+    }
+
+    /*
+      FR-303 — the replay check comes first, before the transition table.
+
+      An offline technician's queue is replayed on reconnect, and the second
+      attempt to record "reached site" arrives when the job is already ON_SITE.
+      Validating the transition first answered that with a 409: the app would
+      treat a successful sync as a failure and keep retrying forever. A write
+      the server has already accepted is not an illegal transition, it is the
+      same write.
+    */
+    if (body.clientUuid) {
+      const [seen] = await db
+        .select({ id: jobEvents.id })
+        .from(jobEvents)
+        .where(
+          and(
+            eq(jobEvents.tenantId, caller.tenantId),
+            eq(jobEvents.clientUuid, body.clientUuid),
+          ),
+        )
+        .limit(1);
+      if (seen) return c.json({ ...job, replayed: true });
+    }
+
+    const allowed = NEXT[job.status] ?? [];
+    if (!allowed.includes(body.to)) {
+      return c.json(
+        {
+          error: `A job cannot go from ${job.status} to ${body.to}`,
+          allowed,
+        },
+        409,
+      );
+    }
+
+    const occurredAt = body.occurredAt ? new Date(body.occurredAt) : new Date();
+
+    try {
+      await db.insert(jobEvents).values({
+        tenantId: caller.tenantId,
+        jobId: id,
+        label: body.note ? `${body.to} — ${body.note}` : body.to,
+        actorUserId: caller.userId,
+        occurredAt,
+        offline: occurredAt.getTime() < Date.now() - 60_000,
+        clientUuid: body.clientUuid ?? null,
+      });
+    } catch {
+      // Belt and braces: two replays racing each other both pass the check
+      // above, and the unique constraint catches the loser.
+      const [current] = await db.select().from(jobs).where(eq(jobs.id, id)).limit(1);
+      return c.json({ ...current, replayed: true });
+    }
+
+    const [updated] = await db
+      .update(jobs)
+      .set({ status: body.to })
+      .where(eq(jobs.id, id))
+      .returning();
+
+    await audit(caller, "TRANSITION_JOB", `${job.jobNumber} → ${body.to}`, {
+      table: "jobs",
+      id,
+    });
+    return c.json(updated);
   },
 );
