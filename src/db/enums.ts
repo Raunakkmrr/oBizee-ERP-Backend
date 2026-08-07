@@ -123,9 +123,18 @@ export const assetConditionEnum = pgEnum("asset_condition", [
   "CRITICAL",
 ]);
 
+/*
+  The roles a site contact actually has, in the words the screen uses.
+
+  `MANAGER` and a bare `ACCOUNTS` were the first guess; the customer screen's
+  own list is `SITE_INCHARGE` and `TENANT`, which are the two that matter on an
+  Indian service call — the person who lets you in, and the person who is not
+  the owner. The database is the one that was wrong.
+*/
 export const contactRoleEnum = pgEnum("contact_role", [
   "OWNER",
-  "MANAGER",
+  "SITE_INCHARGE",
+  "TENANT",
   "SECURITY",
   "ACCOUNTS",
   "OTHER",
