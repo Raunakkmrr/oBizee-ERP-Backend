@@ -1,7 +1,9 @@
 import { eq } from "drizzle-orm";
 import { db } from "./client.ts";
 import {
+  assets,
   branches,
+  contacts,
   customers,
   rateRows,
   seriesCounters,
@@ -34,6 +36,63 @@ import { hashPassword } from "../auth/password.ts";
  */
 const LEGAL_NAME = "Shakti Cooling Systems Pvt Ltd";
 
+/**
+ * Contacts and assets for the seeded sites.
+ *
+ * Split out and guarded because `seed()` used to return the moment it found
+ * the tenant, so anything added to it afterwards never reached a database
+ * that had already been seeded once. The whole-tenant early return made the
+ * seed idempotent and un-extendable at the same time; each section now checks
+ * for itself.
+ */
+export async function ensureContactsAndAssets(tenantId: string): Promise<void> {
+  const [existing] = await db
+    .select({ id: contacts.id })
+    .from(contacts)
+    .where(eq(contacts.tenantId, tenantId))
+    .limit(1);
+  if (existing) return;
+
+  const siteRows = await db
+    .select({ id: sites.id, label: sites.label })
+    .from(sites)
+    .where(eq(sites.tenantId, tenantId));
+  const site = (label: string) => siteRows.find((s) => s.label === label)!.id;
+
+  /*
+    A site with no contact is a site nobody can be called about, and the
+    collections list and the job card both read this. One primary per site,
+    because "who do I ring" must have exactly one answer.
+  */
+  const contactRows: (typeof contacts.$inferInsert)[] = [
+    { tenantId, siteId: site("Okhla plant"), name: "Ravi Kulkarni", phoneE164: "919811034567", whatsappE164: "919811034567", roleLabel: "SITE_INCHARGE", isPrimary: true },
+    { tenantId, siteId: site("Okhla plant"), name: "Anita Rao", phoneE164: "919811034568", whatsappE164: null, roleLabel: "ACCOUNTS", isPrimary: false },
+    { tenantId, siteId: site("Nagpur unit"), name: "Sanjay Pawar", phoneE164: "919822011234", whatsappE164: "919822011234", roleLabel: "SITE_INCHARGE", isPrimary: true },
+    { tenantId, siteId: site("Tower B"), name: "Col. R. Menon (Retd.)", phoneE164: "919810022334", whatsappE164: "919810022334", roleLabel: "OWNER", isPrimary: true },
+    { tenantId, siteId: site("Residence"), name: "Mrs. Deshpande", phoneE164: "919810099887", whatsappE164: null, roleLabel: "OWNER", isPrimary: true },
+    { tenantId, siteId: site("Main block"), name: "Dr. S. Deshmukh", phoneE164: "919811077120", whatsappE164: null, roleLabel: "OWNER", isPrimary: true },
+    { tenantId, siteId: site("Main block"), name: "Farid Ansari", phoneE164: "919811077121", whatsappE164: "919811077121", roleLabel: "SITE_INCHARGE", isPrimary: false },
+  ];
+  await db.insert(contacts).values(contactRows);
+
+  /*
+    The equipment the visits are actually about. Two cases worth having:
+    a unit **under warranty** (the invoice must not charge for the part) and
+    one flagged **repeat failure** (the third visit in a year is a different
+    conversation from the first).
+  */
+  const assetRows: (typeof assets.$inferInsert)[] = [
+    { tenantId, siteId: site("Okhla plant"), assetType: "Chiller", make: "Voltas", model: "VCS-120", serialNumber: "VC120-88213", locationInSite: "Utility block, roof", condition: "NEEDS_ATTENTION", warrantyExpiry: "2027-02-08", repeatFailure: true },
+    { tenantId, siteId: site("Okhla plant"), assetType: "Cold room", make: "Blue Star", model: "CR-40", serialNumber: "BSCR-40-2211", locationInSite: "Despatch bay", condition: "GOOD", warrantyExpiry: null, repeatFailure: false },
+    { tenantId, siteId: site("Nagpur unit"), assetType: "Deep freezer", make: "Vestfrost", model: "DF-500", serialNumber: null, locationInSite: "Stores", condition: "CRITICAL", warrantyExpiry: null, repeatFailure: false },
+    { tenantId, siteId: site("Tower B"), assetType: "Water purifier", make: "Ion Exchange", model: "RO-2000", serialNumber: "IX-RO-77120", locationInSite: "Basement pump room", condition: "GOOD", warrantyExpiry: "2026-11-30", repeatFailure: false },
+    { tenantId, siteId: site("Residence"), assetType: "Refrigerator", make: "LG", model: "GL-T422", serialNumber: "LG422-90112", locationInSite: "Kitchen", condition: "NEEDS_ATTENTION", warrantyExpiry: null, repeatFailure: false },
+    { tenantId, siteId: site("Main block"), assetType: "Chiller", make: "Carrier", model: "30XA-252", serialNumber: "CA30-55210", locationInSite: "Plant room, basement", condition: "GOOD", warrantyExpiry: "2028-03-31", repeatFailure: false },
+  ];
+  await db.insert(assets).values(assetRows);
+
+}
+
 export async function seed(): Promise<string> {
   const [existing] = await db
     .select({ id: tenants.id })
@@ -42,6 +101,7 @@ export async function seed(): Promise<string> {
     .limit(1);
 
   if (existing) {
+    await ensureContactsAndAssets(existing.id);
     console.log(`tenant already seeded: ${existing.id}`);
     return existing.id;
   }
@@ -106,6 +166,8 @@ export async function seed(): Promise<string> {
     { tenantId, customerId: byName.get("Mrs. Deshpande")!, label: "Residence", addressLine1: "B-42, Vasant Kunj", locality: "Vasant Kunj", city: "New Delhi", stateCode: "07", pincode: "110070", landmark: "Behind the DDA market, green gate", accessNotes: "Dog on premises. Ring before entering." },
     { tenantId, customerId: byName.get("Deshmukh Hospital")!, label: "Main block", addressLine1: "Press Enclave Marg", locality: "Saket", city: "New Delhi", stateCode: "07", pincode: "110017", landmark: "Opposite Select Citywalk, gate 3", accessNotes: "Generator room via the basement ramp." },
   ]);
+
+  await ensureContactsAndAssets(tenantId);
 
   await db.insert(vendors).values([
     { tenantId, name: "Kirloskar Spares Depot", gstin: "07AAACK1234F1Z9", stateCode: "07", pan: "AAACK1234F", panType: "COMPANY_FIRM_OTHER", msmeClass: "SMALL", udyamNumber: "UDYAM-DL-03-0012345", udyamActivity: "MANUFACTURING", hasWrittenAgreement: true, paymentTermsDays: 30 },
