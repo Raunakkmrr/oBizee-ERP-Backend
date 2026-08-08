@@ -1,4 +1,4 @@
-import { zValidator } from "@hono/zod-validator";
+import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
 import { and, asc, count, desc, eq, inArray, notInArray } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -214,7 +214,7 @@ const newLead = z.object({
 leadRoutes.post(
   "/",
   requirePermission("lead:write"),
-  zValidator("json", newLead),
+  zBody( newLead),
   async (c) => {
     const caller = c.get("caller");
     const body = c.req.valid("json");
@@ -268,8 +268,7 @@ leadRoutes.post(
 leadRoutes.patch(
   "/:id",
   requirePermission("lead:write"),
-  zValidator(
-    "json",
+  zBody(
     z.object({
       stage: z.enum(["NEW", "CONTACTED", "QUOTED", "WON", "LOST"]).optional(),
       ownerUserId: z.string().uuid().nullable().optional(),
@@ -350,8 +349,7 @@ leadRoutes.patch(
 leadRoutes.post(
   "/:id/convert",
   requirePermission("lead:write"),
-  zValidator(
-    "json",
+  zBody(
     z.object({
       to: z.enum(["job", "customer"]),
       site: z.object({

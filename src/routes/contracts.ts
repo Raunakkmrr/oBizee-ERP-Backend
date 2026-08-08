@@ -1,4 +1,4 @@
-import { zValidator } from "@hono/zod-validator";
+import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../db/client.ts";
@@ -52,8 +52,7 @@ contractRoutes.get("/", requirePermission("contract:read"), async (c) => {
 contractRoutes.post(
   "/",
   requirePermission("contract:write"),
-  zValidator(
-    "json",
+  zBody(
     z.object({
       customerId: z.string().uuid(),
       siteId: z.string().uuid(),

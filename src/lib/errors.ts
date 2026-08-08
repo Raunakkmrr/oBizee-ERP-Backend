@@ -112,8 +112,47 @@ function unwrap(err: unknown): PgError {
   return (err ?? {}) as PgError;
 }
 
+/**
+ * Postgres codes that mean *the caller sent nonsense*, not *we broke*.
+ *
+ * `22P02` is `invalid input syntax for type uuid` — what you get from
+ * `/api/job/not-a-uuid`. Letting it fall through to the 500 branch told the
+ * caller the server had failed when the caller had typed a bad id, and put a
+ * trivially-reachable 500 in the logs where a real fault would hide.
+ */
+const CLIENT_INPUT_CODES = new Set([
+  "22P02", // invalid text representation — a malformed uuid, enum or number
+  "22007", // invalid datetime format
+  "22008", // datetime field overflow
+  "22003", // numeric value out of range
+]);
+
+/**
+ * A body that is not JSON at all.
+ *
+ * `c.req.json()` throws a `SyntaxError` before any validator runs, so no
+ * amount of zod covers it. Every write endpoint answered a truncated request
+ * body with a 500 — the one failure a flaky mobile connection produces most.
+ */
+function isMalformedJson(err: unknown): boolean {
+  if (err instanceof SyntaxError) return true;
+  const message = err instanceof Error ? err.message : "";
+  return /JSON|Unexpected (token|end of)/i.test(message);
+}
+
 export function handleError(err: unknown, c: Context): Response {
+  if (isMalformedJson(err)) {
+    return c.json({ error: "That request body was not valid JSON." }, 400);
+  }
+
   const pg = unwrap(err);
+
+  if (pg?.code && CLIENT_INPUT_CODES.has(pg.code)) {
+    return c.json(
+      { error: "One of those values is not in a form this system can read.", code: pg.code },
+      400,
+    );
+  }
 
   if (pg?.constraint && BY_CONSTRAINT[pg.constraint]) {
     const known = BY_CONSTRAINT[pg.constraint]!;

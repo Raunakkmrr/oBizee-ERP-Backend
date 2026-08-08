@@ -1,4 +1,4 @@
-import { zValidator } from "@hono/zod-validator";
+import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
 import { and, eq, sum } from "drizzle-orm";
 import { db } from "../db/client.ts";
@@ -36,8 +36,7 @@ function bucketFor(daysOverdue: number): (typeof AGEING_BUCKETS)[number] {
 paymentRoutes.post(
   "/",
   requirePermission("payment:write"),
-  zValidator(
-    "json",
+  zBody(
     z.object({
       invoiceId: z.string().uuid(),
       amountPaise: z.number().int().positive(),

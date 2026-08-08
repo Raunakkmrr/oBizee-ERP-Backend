@@ -1,4 +1,4 @@
-import { zValidator } from "@hono/zod-validator";
+import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { db } from "../db/client.ts";
@@ -53,8 +53,7 @@ advanceRoutes.get("/", requirePermission("payment:read"), async (c) => {
 advanceRoutes.post(
   "/",
   requirePermission("payment:write"),
-  zValidator(
-    "json",
+  zBody(
     z.object({
       customerId: z.string().uuid(),
       contractId: z.string().uuid().nullable().optional(),
@@ -138,7 +137,7 @@ advanceRoutes.post(
 advanceRoutes.post(
   "/:id/adjust",
   requirePermission("payment:write"),
-  zValidator("json", z.object({ invoiceId: z.string().uuid() })),
+  zBody( z.object({ invoiceId: z.string().uuid() })),
   async (c) => {
     const caller = c.get("caller");
     const id = c.req.param("id");

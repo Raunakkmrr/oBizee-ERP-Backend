@@ -1,4 +1,4 @@
-import { zValidator } from "@hono/zod-validator";
+import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
 import { and, asc, eq, sum } from "drizzle-orm";
 import { db } from "../db/client.ts";
@@ -52,8 +52,7 @@ vendorRoutes.get("/", requirePermission("part:purchase"), async (c) => {
 vendorRoutes.post(
   "/",
   requirePermission("part:purchase"),
-  zValidator(
-    "json",
+  zBody(
     z.object({
       name: z.string().trim().min(2),
       gstin: z.string().regex(/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z][Z][0-9A-Z]$/).nullable().optional(),
@@ -104,8 +103,7 @@ vendorRoutes.post(
 vendorRoutes.post(
   "/advise",
   requirePermission("part:purchase"),
-  zValidator(
-    "json",
+  zBody(
     z.object({
       vendorId: z.string().uuid(),
       description: z.string().default(""),
@@ -159,8 +157,7 @@ vendorRoutes.post(
 vendorRoutes.post(
   "/bills",
   requirePermission("part:purchase"),
-  zValidator(
-    "json",
+  zBody(
     z.object({
       vendorId: z.string().uuid(),
       vendorBillNumber: z.string().trim().min(1),
@@ -273,8 +270,7 @@ vendorRoutes.get("/bills", requirePermission("payment:read"), async (c) => {
 vendorRoutes.post(
   "/bills/:id/pay",
   requirePermission("payment:write"),
-  zValidator(
-    "json",
+  zBody(
     z.object({
       paidOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       reference: z.string().trim().max(120).optional(),

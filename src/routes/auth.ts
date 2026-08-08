@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { zValidator } from "@hono/zod-validator";
+import { zBody } from "../lib/validate.ts";
+import { apiRouter } from "../lib/router.ts";
 import { z } from "zod";
 import { e164 } from "../lib/phone.ts";
 import { otpSenderFrom } from "../auth/otp-sender.ts";
@@ -16,11 +17,36 @@ import type { AppEnv } from "../auth/context.ts";
  * the only endpoints that may be reached without a token, and being public is
  * therefore a decision somebody made rather than a check somebody forgot.
  */
-export const authRoutes = new Hono<AppEnv>();
+/*
+  `apiRouter()`, not `new Hono()`. Hono calls the `onError` of the instance the
+  error was thrown in, so an auth route on a bare instance had no mapping at
+  all — a malformed sign-in body came back as a bare 500. This is the drift
+  `router.ts` warns about, and auth was the one file that had it.
+*/
+export const authRoutes = apiRouter();
 
-const phoneBody = z.object({ phone: z.string().min(1) });
+/*
+  A malformed number is a 400; an unrecognised one is still a neutral 200.
 
-authRoutes.post("/otp/request", zValidator("json", phoneBody), async (c) => {
+  The two are different failures and only one of them is the caller's mistake.
+  `min(1)` accepted "abc", which `e164` then refused, and the route answered
+  with the same "a code is on its way" it gives a real number — so a client
+  sending a name instead of a number looked successful forever.
+
+  The neutral answer stays for anything *shaped* like a number, because that
+  is what stops the endpoint being used to ask who works here.
+*/
+const phoneBody = z.object({
+  phone: z
+    .string()
+    .trim()
+    .min(1)
+    .refine((value) => e164(value) !== null, {
+      message: "That is not a phone number this system can dial",
+    }),
+});
+
+authRoutes.post("/otp/request", zBody( phoneBody), async (c) => {
   const { phone } = c.req.valid("json");
   const normalised = e164(phone);
 
@@ -38,7 +64,7 @@ authRoutes.post("/otp/request", zValidator("json", phoneBody), async (c) => {
 
 authRoutes.post(
   "/otp/verify",
-  zValidator("json", phoneBody.extend({ code: z.string().length(6) })),
+  zBody( phoneBody.extend({ code: z.string().length(6) })),
   async (c) => {
     const { phone, code } = c.req.valid("json");
     const normalised = e164(phone);
@@ -56,7 +82,7 @@ authRoutes.post(
 
 authRoutes.post(
   "/password",
-  zValidator("json", z.object({ email: z.string().email(), password: z.string().min(1) })),
+  zBody( z.object({ email: z.string().email(), password: z.string().min(1) })),
   async (c) => {
     const { email, password } = c.req.valid("json");
     const result = await signInWithPassword(email.toLowerCase().trim(), password);
@@ -71,7 +97,7 @@ authRoutes.post(
 
 authRoutes.post(
   "/refresh",
-  zValidator("json", z.object({ refreshToken: z.string().min(1) })),
+  zBody( z.object({ refreshToken: z.string().min(1) })),
   async (c) => {
     const result = await rotateRefresh(c.req.valid("json").refreshToken);
     if (result.kind === "refused") return c.json({ error: result.reason }, 401);

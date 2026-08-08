@@ -1,4 +1,4 @@
-import { zValidator } from "@hono/zod-validator";
+import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "../db/client.ts";
@@ -110,7 +110,7 @@ const newJob = z.object({
 jobRoutes.post(
   "/",
   requirePermission("job:write"),
-  zValidator("json", newJob),
+  zBody( newJob),
   async (c) => {
     const caller = c.get("caller");
     const body = c.req.valid("json");
@@ -183,7 +183,7 @@ const assignBody = z.object({
 jobRoutes.post(
   "/:id/assign",
   requirePermission("job:dispatch"),
-  zValidator("json", assignBody),
+  zBody( assignBody),
   async (c) => {
     const caller = c.get("caller");
     const id = c.req.param("id");
@@ -253,8 +253,7 @@ jobRoutes.post(
 jobRoutes.post(
   "/:id/reschedule",
   requirePermission("job:write"),
-  zValidator(
-    "json",
+  zBody(
     z.object({
       scheduledDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       slot: z.enum(["9-1", "1-5", "5-8"]).optional(),
@@ -316,8 +315,7 @@ const NEXT: Record<string, readonly string[]> = {
 
 jobRoutes.post(
   "/:id/transition",
-  zValidator(
-    "json",
+  zBody(
     z.object({
       to: z.enum([
         "ASSIGNED", "EN_ROUTE", "ON_SITE", "PARTS_AWAITED",

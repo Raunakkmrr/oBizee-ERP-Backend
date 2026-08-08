@@ -1,4 +1,4 @@
-import { zValidator } from "@hono/zod-validator";
+import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/client.ts";
@@ -135,7 +135,7 @@ const createInvoice = z
 invoiceRoutes.post(
   "/",
   requirePermission("invoice:write"),
-  zValidator("json", createInvoice),
+  zBody( createInvoice),
   async (c) => {
     const caller = c.get("caller");
     const body = c.req.valid("json");

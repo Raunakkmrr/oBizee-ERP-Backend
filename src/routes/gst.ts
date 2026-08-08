@@ -1,4 +1,4 @@
-import { zValidator } from "@hono/zod-validator";
+import { zParam, zQuery } from "../lib/validate.ts";
 import { z } from "zod";
 import { and, eq, gte, lte } from "drizzle-orm";
 import { db } from "../db/client.ts";
@@ -287,7 +287,7 @@ export async function gstPeriod(tenantId: string, period: string) {
 gstRoutes.get(
   "/:period",
   requirePermission("gst:read"),
-  zValidator("param", z.object({ period: z.string().regex(/^\d{4}-\d{2}$/) })),
+  zParam( z.object({ period: z.string().regex(/^\d{4}-\d{2}$/) })),
   async (c) => {
     const { tenantId } = c.get("caller");
     return c.json(await gstPeriod(tenantId, c.req.param("period")));
@@ -307,8 +307,8 @@ gstRoutes.get(
 gstRoutes.get(
   "/:period/export",
   requirePermission("export:generate"),
-  zValidator("param", z.object({ period: z.string().regex(/^\d{4}-\d{2}$/) })),
-  zValidator("query", z.object({ format: z.enum(["tally", "zoho", "json"]).default("json") })),
+  zParam( z.object({ period: z.string().regex(/^\d{4}-\d{2}$/) })),
+  zQuery( z.object({ format: z.enum(["tally", "zoho", "json"]).default("json") })),
   async (c) => {
     const caller = c.get("caller");
     const { from, to, label } = periodBounds(c.req.param("period"));
