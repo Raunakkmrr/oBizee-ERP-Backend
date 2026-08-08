@@ -96,13 +96,27 @@ jobRoutes.get("/", async (c) => {
   });
 });
 
+/**
+ * A window, or an exact time.
+ *
+ * `9-1`, `1-5` and `5-8` are the day's three windows and cover most visits.
+ * An exact time is the one a customer was actually promised — "the doctor is
+ * only free at 11:30" — and the board already sorts it among the windows by
+ * its own hour. The validator allowed only the three, which refused a job the
+ * column and the board both handle.
+ */
+const slotSchema = z.union([
+  z.enum(["9-1", "1-5", "5-8"]),
+  z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/, "A time like 11:30, or one of the day's windows"),
+]);
+
 const newJob = z.object({
   customerId: z.string().uuid(),
   siteId: z.string().uuid(),
   serviceType: z.string().trim().min(2),
   scheduledDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   /** FR-203: a slot, never a false-precision timestamp. */
-  slot: z.enum(["9-1", "1-5", "5-8"]).optional(),
+  slot: slotSchema.optional(),
   priority: z.enum(["normal", "urgent", "breakdown"]).default("normal"),
   primaryTechnicianId: z.string().uuid().nullable().optional(),
 });
@@ -256,7 +270,7 @@ jobRoutes.post(
   zBody(
     z.object({
       scheduledDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-      slot: z.enum(["9-1", "1-5", "5-8"]).optional(),
+      slot: slotSchema.optional(),
       reason: z.string().trim().min(3),
     }),
   ),
@@ -281,6 +295,23 @@ jobRoutes.post(
       })
       .where(eq(jobs.id, id))
       .returning();
+
+    /*
+      Also on the job's own timeline, not only in the audit log.
+
+      The audit log answers "who changed what" months later; the timeline
+      answers "what has happened to this visit" to the next person who opens
+      it. A visit that moved — and why — is exactly what the technician
+      arriving tomorrow needs, and FR-203's reason was reaching only the log
+      nobody reads while working.
+    */
+    await db.insert(jobEvents).values({
+      tenantId: caller.tenantId,
+      jobId: id,
+      label: `Moved to ${body.scheduledDate}${body.slot ? ` ${body.slot}` : ""} — ${body.reason}`,
+      actorUserId: caller.userId,
+      occurredAt: new Date(),
+    });
 
     await audit(
       caller,
