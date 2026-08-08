@@ -258,3 +258,61 @@ vendorRoutes.get("/bills", requirePermission("payment:read"), async (c) => {
   */
   return c.json({ bills, atRiskPaise, lostPaise });
 });
+
+/**
+ * Settle a purchase bill — the §43B(h) clock stops here.
+ *
+ * There was no route for this at all: the money screen removed a paid bill
+ * from a browser array and nothing reached the ledger, so the deduction clock
+ * kept running server-side on a bill that had been paid.
+ *
+ * `paidOn` is a real date and not `now()`, because a bill paid on the 14th and
+ * recorded on the 16th was paid on the 14th — and with a 15-day MSMED limit
+ * those two days are the whole question.
+ */
+vendorRoutes.post(
+  "/bills/:id/pay",
+  requirePermission("payment:write"),
+  zValidator(
+    "json",
+    z.object({
+      paidOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      reference: z.string().trim().max(120).optional(),
+    }),
+  ),
+  async (c) => {
+    const caller = c.get("caller");
+    const id = c.req.param("id");
+    const { paidOn, reference } = c.req.valid("json");
+
+    const [bill] = await db
+      .select()
+      .from(purchaseBills)
+      .where(and(eq(purchaseBills.id, id), eq(purchaseBills.tenantId, caller.tenantId)))
+      .limit(1);
+    if (!bill) return c.json({ error: "No such bill" }, 404);
+
+    // Paying twice is not idempotent, it is a second payment nobody made.
+    if (bill.status === "PAID") {
+      return c.json({ error: `That bill was already settled on ${bill.paidOn}` }, 409);
+    }
+    if (paidOn < bill.billDate) {
+      return c.json({ error: "A bill cannot be paid before it was raised" }, 400);
+    }
+
+    const [updated] = await db
+      .update(purchaseBills)
+      .set({ status: "PAID", paidOn })
+      .where(eq(purchaseBills.id, id))
+      .returning();
+
+    await audit(
+      caller,
+      "PAY_PURCHASE_BILL",
+      `${bill.vendorName} ${bill.vendorBillNumber} settled on ${paidOn}${reference ? ` (${reference})` : ""}`,
+      { table: "purchase_bills", id },
+    );
+
+    return c.json(updated);
+  },
+);
