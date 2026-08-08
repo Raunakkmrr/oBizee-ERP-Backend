@@ -1,8 +1,18 @@
 import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, count, desc, eq, inArray, like } from "drizzle-orm";
 import { db } from "../db/client.ts";
-import { branches, contractSchedules, contracts, customers, jobs, sites } from "../db/schema.ts";
+import {
+  branches,
+  contacts,
+  contractSchedules,
+  contracts,
+  customers,
+  jobs,
+  leadActivities,
+  leads,
+  sites,
+} from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
 import { formatNumber, nextInSeries } from "../lib/series.ts";
@@ -236,3 +246,126 @@ contractRoutes.post(
     return c.json({ created: created.length, jobs: created });
   },
 );
+
+/**
+ * Work an expiring AMC as a renewal lead — FR-507.
+ *
+ * One endpoint rather than "create a lead, then note the contract on it",
+ * because the thing that matters here is **idempotency**: two renewal leads
+ * for one contract is two people ringing the same customer on the same day,
+ * and two browser round trips cannot be made safe against that.
+ *
+ * The link is the activity note, which opens with the contract's own
+ * reference. Matching on the reference and not the customer's name is
+ * deliberate — a customer with a lift AMC and a chiller AMC has two contracts
+ * renewing on different dates, and name-matching would silently swallow the
+ * second one.
+ */
+contractRoutes.post("/:id/renewal-lead", requirePermission("lead:write"), async (c) => {
+  const caller = c.get("caller");
+  const id = c.req.param("id");
+
+  const [contract] = await db
+    .select({
+      id: contracts.id,
+      reference: contracts.reference,
+      endDate: contracts.endDate,
+      customerId: contracts.customerId,
+      siteId: contracts.siteId,
+      customer: customers.name,
+    })
+    .from(contracts)
+    .innerJoin(customers, eq(contracts.customerId, customers.id))
+    .where(and(eq(contracts.id, id), eq(contracts.tenantId, caller.tenantId)))
+    .limit(1);
+  if (!contract) return c.json({ error: "No such contract" }, 404);
+
+  // Already in the pipeline? Say so rather than raising a second one.
+  const [existing] = await db
+    .select({ id: leads.id, reference: leads.reference })
+    .from(leads)
+    .innerJoin(leadActivities, eq(leadActivities.leadId, leads.id))
+    .where(
+      and(
+        eq(leads.tenantId, caller.tenantId),
+        eq(leads.source, "AMC renewal"),
+        like(leadActivities.note, `${contract.reference}%`),
+      ),
+    )
+    .limit(1);
+  if (existing) return c.json({ ...existing, alreadyWorking: true });
+
+  // The number to ring: this site's primary contact.
+  const [contact] = contract.siteId
+    ? await db
+        .select({ phone: contacts.phoneE164 })
+        .from(contacts)
+        .where(and(eq(contacts.tenantId, caller.tenantId), eq(contacts.siteId, contract.siteId)))
+        .orderBy(desc(contacts.isPrimary))
+        .limit(1)
+    : [];
+
+  const [site] = contract.siteId
+    ? await db
+        .select({ locality: sites.locality })
+        .from(sites)
+        .where(eq(sites.id, contract.siteId))
+        .limit(1)
+    : [];
+
+  /*
+    Same reference convention as `POST /api/leads`, deliberately — one shape of
+    lead reference, not two.
+
+    Worth noting it is a count and not a series: two leads created at the same
+    instant read the same count and one is rejected by
+    `leads_tenant_reference_uq`. Tolerable while a lead reference is a
+    convenience rather than a statutory number, unlike invoices — but it is a
+    real race and it lives in `POST /api/leads` too.
+  */
+  const [counted] = await db
+    .select({ value: count() })
+    .from(leads)
+    .where(eq(leads.tenantId, caller.tenantId));
+  const now = new Date();
+  const reference = `L-${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, "0")}-${String(Number(counted?.value ?? 0) + 1).padStart(4, "0")}`;
+
+  const [lead] = await db
+    .insert(leads)
+    .values({
+      tenantId: caller.tenantId,
+      reference,
+      name: contract.customer,
+      phoneE164: contact?.phone ?? null,
+      locality: site?.locality ?? null,
+      source: "AMC renewal",
+      stage: "NEW",
+      // FR-103: whoever picked it up earns the renewal.
+      takenByUserId: caller.userId,
+      ownerUserId: caller.userId,
+      // Due now: a renewal that expires next month is called this week.
+      nextFollowUpAt: now,
+    })
+    .returning({ id: leads.id, reference: leads.reference });
+
+  await db.insert(leadActivities).values({
+    tenantId: caller.tenantId,
+    leadId: lead!.id,
+    /*
+      Not "Spoke" — nobody has. The first activity on a renewal lead records
+      how it got into the queue, and claiming a call that never happened is
+      the same lie as recording one for a dragged card.
+    */
+    outcome: "Renewal raised",
+    // The reference leads, because that is what the contracts screen matches on.
+    note: `${contract.reference} expires ${contract.endDate}`,
+    actorUserId: caller.userId,
+  });
+
+  await audit(caller, "WORK_RENEWAL_AS_LEAD", `${contract.reference} → ${lead!.reference}`, {
+    table: "leads",
+    id: lead!.id,
+  });
+
+  return c.json({ ...lead, alreadyWorking: false }, 201);
+});
