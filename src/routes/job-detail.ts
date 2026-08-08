@@ -52,9 +52,22 @@ function dayWord(at: Date | string | null): string | null {
 /** In-flight states have an elapsed time worth showing; finished ones do not. */
 const IN_FLIGHT = ["EN_ROUTE", "ON_SITE", "PARTS_AWAITED"];
 
+/** `J-2608-0431` — the form a coordinator reads down the phone (FR-210). */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 jobDetailRoutes.get("/:id", async (c) => {
   const caller = c.get("caller");
-  const id = c.req.param("id");
+  const key = c.req.param("id");
+
+  /*
+    Accepts either the id or the job number.
+
+    The screen's URL is `/jobs/J-2608-0431`, deliberately: the number is what
+    gets read aloud on a call and typed into a browser afterwards. Taking only
+    a uuid meant every load of that page answered 400 — the number is not a
+    malformed id, it is the other way of naming the same job.
+  */
+  const identifies = UUID.test(key) ? eq(jobs.id, key) : eq(jobs.jobNumber, key);
 
   const seesAll = can(caller.role, "job:read", undefined, caller.level);
   const seesOwn = can(caller.role, "job:read_own", undefined, caller.level);
@@ -76,10 +89,13 @@ jobDetailRoutes.get("/:id", async (c) => {
     .innerJoin(customers, eq(jobs.customerId, customers.id))
     .innerJoin(sites, eq(jobs.siteId, sites.id))
     .leftJoin(users, eq(jobs.primaryTechnicianId, users.id))
-    .where(and(eq(jobs.id, id), eq(jobs.tenantId, caller.tenantId)))
+    .where(and(identifies, eq(jobs.tenantId, caller.tenantId)))
     .limit(1);
 
   if (!row) return c.json({ error: "No such job" }, 404);
+
+  // Everything below joins on the resolved row, not on what the caller typed.
+  const id = row.job.id;
 
   // FR-306: a technician may open his own job and no one else's.
   if (!seesAll && row.job.primaryTechnicianId !== caller.userId) {

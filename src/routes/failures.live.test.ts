@@ -153,8 +153,19 @@ describe.skipIf(!reachable)("how the API refuses", () => {
   });
 
   it("answers a malformed id with 400, not a database fault", async () => {
-    const res = await fetch(`${BASE}/api/job/not-a-uuid`, { headers: auth });
-    expect(res.status).toBe(400);
+    /*
+      On a route that takes only a uuid. `/api/job/:id` is deliberately not one
+      of them — it accepts a job number too, because that is what the screen's
+      URL carries, so `not-a-uuid` there is a number nobody has rather than a
+      malformed id.
+    */
+    for (const path of ["/api/customers/not-a-uuid", "/api/invoices/not-a-uuid"]) {
+      const res = await fetch(`${BASE}${path}`, { headers: auth });
+      expect(res.status, path).toBe(400);
+    }
+
+    const byNumber = await fetch(`${BASE}/api/job/not-a-uuid`, { headers: auth });
+    expect(byNumber.status).toBe(404);
   });
 
   it("answers a missing row with 404", async () => {
