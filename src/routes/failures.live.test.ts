@@ -19,7 +19,10 @@
  *
  * Skipped when the server is not running, so `vitest run` stays green offline.
  */
+import { sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
+
+import { db } from "../db/client.ts";
 
 const BASE = process.env.API_URL ?? "http://localhost:8787";
 
@@ -66,6 +69,30 @@ describe.skipIf(!reachable)("how the API refuses", () => {
   let auth: Record<string, string>;
 
   beforeAll(async () => {
+    /*
+      This file deliberately signs in wrongly, and wrong sign-ins are now
+      counted. Left alone, running the suite three times in fifteen minutes
+      locks the seeded owner out and every later assertion fails as 401 —
+      which looks like the API broke rather than the limiter working.
+
+      So the test clears the budgets it is about to spend. Only these keys, and
+      only for the seeded development account.
+    */
+    for (const key of [
+      "pw:account:manish@shakticooling.test",
+      "pw:account:nobody@shakticooling.test",
+      "pw:ip:unknown",
+      "pw:ip:127.0.0.1",
+      "pw:ip:::1",
+      "otp:req:phone:919820012345",
+      "otp:req:phone:919999888877",
+      "otp:req:ip:unknown",
+      "otp:req:ip:127.0.0.1",
+      "otp:req:ip:::1",
+    ]) {
+      await db.execute(sql`select clear_rate_limit(${key})`);
+    }
+
     const res = await fetch(`${BASE}/auth/password`, {
       method: "POST",
       headers: { "content-type": "application/json" },
