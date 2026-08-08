@@ -20,7 +20,7 @@
  *
  * Re-running replaces the day rather than doubling it.
  */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, like } from "drizzle-orm";
 
 import { db } from "./client.ts";
 import { customers, jobEvents, jobs, leads, sites, tenants, users } from "./schema.ts";
@@ -93,11 +93,17 @@ export async function seedDay(): Promise<void> {
   const today = isoInIndia(0);
   const tomorrow = isoInIndia(1);
 
-  // Replace, don't double. Events cascade with the jobs they belong to.
+  /*
+    Replace this fixture's own rows, identified by their numbers rather than by
+    the day they sit on. Deleting by date only worked on the day they were
+    written: run this tomorrow and `J-DAY-01` is still on yesterday's board, so
+    the insert collides with `jobs_tenant_number_uq` and the fixture that exists
+    to be re-runnable stops being re-runnable. Events cascade with their jobs.
+  */
   const stale = await db
     .select({ id: jobs.id })
     .from(jobs)
-    .where(and(eq(jobs.tenantId, tenantId), inArray(jobs.scheduledDate, [today, tomorrow])));
+    .where(and(eq(jobs.tenantId, tenantId), like(jobs.jobNumber, "J-DAY-%")));
   if (stale.length > 0) {
     await db.delete(jobs).where(
       inArray(
