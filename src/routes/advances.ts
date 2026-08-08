@@ -26,14 +26,29 @@ export const advanceRoutes = apiRouter();
 advanceRoutes.get("/", requirePermission("payment:read"), async (c) => {
   const { tenantId } = c.get("caller");
 
+  /*
+    The customer's name and the adjusting invoice's number travel with the row.
+
+    The screen shows both, and looking them up in the browser would mean
+    shipping the customer and invoice registers to render a list of vouchers —
+    and matching on names, which is what the foreign keys exist to stop.
+  */
   const rows = await db
-    .select()
+    .select({
+      advance: advances,
+      customer: customers.name,
+      adjustedByInvoice: invoices.number,
+    })
     .from(advances)
+    .innerJoin(customers, eq(advances.customerId, customers.id))
+    .leftJoin(invoices, eq(advances.adjustedByInvoiceId, invoices.id))
     .where(eq(advances.tenantId, tenantId))
     .orderBy(asc(advances.receivedOn));
 
-  const withTax = rows.map((row) => ({
+  const withTax = rows.map(({ advance: row, customer, adjustedByInvoice }) => ({
     ...row,
+    customer,
+    adjustedByInvoice,
     // The split, because "₹4,24,800 received" is not the figure the return
     // needs — the taxable value and the tax inside it are.
     tax: advanceTax(row.receiptPaise, row.ratePercent, row.head),
@@ -46,7 +61,7 @@ advanceRoutes.get("/", requirePermission("payment:read"), async (c) => {
       a service still owed — nobody looking at "who owes us" would otherwise see
       it, which is what makes the cash position flattering rather than true.
     */
-    unadjustedTaxPaise: unadjustedTaxPaise(rows),
+    unadjustedTaxPaise: unadjustedTaxPaise(rows.map((r) => r.advance)),
   });
 });
 
@@ -144,11 +159,37 @@ advanceRoutes.post(
     const { invoiceId } = c.req.valid("json");
 
     const [invoice] = await db
-      .select({ id: invoices.id, number: invoices.number })
+      .select({ id: invoices.id, number: invoices.number, customerId: invoices.customerId })
       .from(invoices)
       .where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, caller.tenantId)))
       .limit(1);
     if (!invoice) return c.json({ error: "No such invoice" }, 404);
+
+    /*
+      The advance and the invoice must belong to the same customer.
+
+      Nothing enforced this, and the screen offered whichever invoice happened
+      to be newest — so one customer's advance could be closed against
+      another's bill. The credit lands on the wrong ledger, the paying customer
+      is still shown as owing it, and GSTR-1 reports the adjustment against the
+      wrong GSTIN. A refusal here is the only place that catches it, because by
+      the time it is on a return nobody is looking.
+    */
+    const [advance] = await db
+      .select({ customerId: advances.customerId, voucherNumber: advances.voucherNumber })
+      .from(advances)
+      .where(and(eq(advances.id, id), eq(advances.tenantId, caller.tenantId)))
+      .limit(1);
+    if (!advance) return c.json({ error: "No such advance" }, 404);
+
+    if (advance.customerId !== invoice.customerId) {
+      return c.json(
+        {
+          error: `${advance.voucherNumber} was taken from a different customer than ${invoice.number} bills. An advance settles against that customer's own invoice.`,
+        },
+        409,
+      );
+    }
 
     const [updated] = await db
       .update(advances)

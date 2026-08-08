@@ -185,6 +185,45 @@ describe.skipIf(!reachable)("how the API refuses", () => {
     expect((await fetch(`${BASE}/api/does-not-exist`, { headers: auth })).status).toBe(404);
   });
 
+  it("refuses an advance settled against another customer's invoice", async () => {
+    /*
+      Nothing enforced this, and the screen offered whichever invoice happened
+      to be newest — so one customer's advance could close against another's
+      bill. The credit lands on the wrong ledger and GSTR-1 reports it against
+      the wrong GSTIN, which nobody notices once it is on a return.
+    */
+    const get = async (path: string) =>
+      (await fetch(`${BASE}${path}`, { headers: auth })).json() as Promise<{
+        customers: { id: string; name: string; sites: { id: string }[] }[];
+      }>;
+    const { customers } = await get("/api/customers");
+    const [a, b] = customers.filter((c) => c.sites.length > 0);
+    if (!a || !b) return;
+
+    const post = async (path: string, body: unknown) =>
+      (await fetch(`${BASE}${path}`, { method: "POST", headers: auth, body: JSON.stringify(body) })).json();
+
+    const line = [{ description: "guard", code: "9987", kind: "service", qty: 1, ratePaise: 100_00, ratePercent: 18 }];
+    const advance = (await post("/api/advances", {
+      customerId: a.id,
+      receiptPaise: 1_180_00,
+      ratePercent: 18,
+      receivedOn: new Date().toISOString().slice(0, 10),
+    })) as { id: string };
+    const theirs = (await post("/api/invoices", {
+      customerId: b.id,
+      siteId: b.sites[0]!.id,
+      lines: line,
+    })) as { id: string };
+
+    const res = await fetch(`${BASE}/api/advances/${advance.id}/adjust`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ invoiceId: theirs.id }),
+    });
+    expect(res.status).toBe(409);
+  });
+
   describe("sign-in", () => {
     const post = (path: string, body: unknown) =>
       fetch(`${BASE}${path}`, {
