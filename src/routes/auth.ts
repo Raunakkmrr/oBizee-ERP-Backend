@@ -13,6 +13,12 @@ import {
   verifyOtp,
 } from "../auth/sign-in.ts";
 import type { AppEnv } from "../auth/context.ts";
+import {
+  clearRefreshCookie,
+  readRefreshToken,
+  setRefreshCookie,
+  wantsTokenInBody,
+} from "../auth/refresh-cookie.ts";
 
 /**
  * Sign-in routes. Mounted **before** `requireCaller`, deliberately — these are
@@ -97,9 +103,10 @@ authRoutes.post(
 
     const result = await verifyOtp(normalised, code);
     if (result.kind === "refused") return c.json({ error: result.reason }, 401);
+    setRefreshCookie(c, result.refreshToken);
     return c.json({
       accessToken: result.accessToken,
-      refreshToken: result.refreshToken,
+      ...(wantsTokenInBody(c) ? { refreshToken: result.refreshToken } : {}),
       user: { name: result.caller.name, role: result.caller.role },
     });
   },
@@ -130,9 +137,16 @@ authRoutes.post(
       punishes use rather than attack.
     */
     await clear(accountKey);
+    /*
+      The refresh token goes into an httpOnly cookie and, unless a native
+      client asked for it, nowhere else. Handing it back in the body is what
+      put it in `localStorage`, where any injected script could read it and
+      hold a working session for thirty days.
+    */
+    setRefreshCookie(c, result.refreshToken);
     return c.json({
       accessToken: result.accessToken,
-      refreshToken: result.refreshToken,
+      ...(wantsTokenInBody(c) ? { refreshToken: result.refreshToken } : {}),
       user: { name: result.caller.name, role: result.caller.role },
     });
   },
@@ -140,7 +154,15 @@ authRoutes.post(
 
 authRoutes.post(
   "/refresh",
-  zBody( z.object({ refreshToken: z.string().min(1) })),
+  /*
+    The token arrives in a cookie the browser sends and script cannot read, so
+    the body is optional now. Still accepted, because a native client that
+    asked for the token in the body has to return it somehow — and because a
+    browser holding an old `localStorage` token from before this change gets
+    one last refresh, after which it has a cookie and the old token is rotated
+    away.
+  */
+  zBody(z.object({ refreshToken: z.string().min(1).optional() })),
   async (c) => {
     /*
       By IP only. A refresh token is the identifier here, and keying on it
@@ -150,11 +172,20 @@ authRoutes.post(
     const verdict = await consumeAll([[`refresh:ip:${callerIp(c)}`, LIMITS.refreshPerIp]]);
     if (!verdict.allowed) return tooMany(c, verdict.retryAfter);
 
-    const result = await rotateRefresh(c.req.valid("json").refreshToken);
-    if (result.kind === "refused") return c.json({ error: result.reason }, 401);
+    const presented = readRefreshToken(c, c.req.valid("json").refreshToken);
+    if (!presented) return c.json({ error: "Sign in again" }, 401);
+
+    const result = await rotateRefresh(presented);
+    if (result.kind === "refused") {
+      // A cookie that no longer works is worse than no cookie: every later
+      // request presents it, is refused, and the session never resolves.
+      clearRefreshCookie(c);
+      return c.json({ error: result.reason }, 401);
+    }
+    setRefreshCookie(c, result.refreshToken);
     return c.json({
       accessToken: result.accessToken,
-      refreshToken: result.refreshToken,
+      ...(wantsTokenInBody(c) ? { refreshToken: result.refreshToken } : {}),
     });
   },
 );
@@ -169,9 +200,13 @@ authRoutes.post(
  */
 authRoutes.post(
   "/sign-out",
-  zBody(z.object({ refreshToken: z.string().min(1) })),
+  zBody(z.object({ refreshToken: z.string().min(1).optional() }).optional()),
   async (c) => {
-    await revokeRefreshToken(c.req.valid("json").refreshToken);
+    const presented = readRefreshToken(c, c.req.valid("json")?.refreshToken);
+    if (presented) await revokeRefreshToken(presented);
+    // Cleared whether or not anything was revoked. A sign-out that leaves the
+    // cookie behind is a door closed with the key still in it.
+    clearRefreshCookie(c);
     return c.json({ signedOut: true });
   },
 );

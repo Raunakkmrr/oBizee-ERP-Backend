@@ -9,6 +9,7 @@ import { peopleRoutes } from "./routes/people.ts";
 import { settingsRoutes } from "./routes/settings.ts";
 import { partRoutes } from "./routes/parts.ts";
 import { changeOwnPassword } from "./auth/sign-in.ts";
+import { setRefreshCookie, wantsTokenInBody } from "./auth/refresh-cookie.ts";
 import { homeRoutes } from "./routes/home.ts";
 import { boardRoutes } from "./routes/board.ts";
 import { jobRoutes } from "./routes/jobs.ts";
@@ -58,7 +59,15 @@ app.use(
   cors({
     origin: (origin) => (ALLOWED_ORIGINS.includes(origin) ? origin : null),
     allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allowHeaders: ["Content-Type", "Authorization"],
+    allowHeaders: ["Content-Type", "Authorization", "X-Token-Delivery"],
+    /*
+      The refresh token is an httpOnly cookie, and a browser will neither send
+      nor store one on a cross-origin call without this. Safe only because the
+      allow-list above is explicit: `credentials` alongside a wildcard origin is
+      the combination that hands any site a signed-in session, and the browser
+      refuses that pairing outright.
+    */
+    credentials: true,
     /*
       The web app reads `Retry-After` off a 429 to say how long the wait is.
       A browser hides every response header that is not on this list, so
@@ -127,7 +136,16 @@ app.post("/api/me/password", async (c) => {
   const result = await changeOwnPassword(caller.userId, body.currentPassword, body.newPassword);
   if (result.kind === "refused") return c.json({ error: result.reason }, 401);
 
-  return c.json({ accessToken: result.accessToken, refreshToken: result.refreshToken });
+  /*
+    A new password means new tokens — the old access token still carries the
+    must-change claim — and the cookie has to be replaced too, or the browser
+    keeps refreshing its way back to a session that was just revoked.
+  */
+  setRefreshCookie(c, result.refreshToken);
+  return c.json({
+    accessToken: result.accessToken,
+    ...(wantsTokenInBody(c) ? { refreshToken: result.refreshToken } : {}),
+  });
 });
 
 app.get("/api/me", (c) => {
