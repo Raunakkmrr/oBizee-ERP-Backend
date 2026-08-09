@@ -48,7 +48,14 @@ export const app = new Hono<AppEnv>();
  * front end arrives.
  */
 const ALLOWED_ORIGINS = (
-  process.env.WEB_ORIGINS ?? "http://localhost:3000,http://localhost:3100"
+  /*
+    3000 is `next dev`, 3100 is the Playwright suite, 3200 is the production
+    server `npm run budget:js` measures against — which could not sign in at
+    all until that third one was here, because a missing origin fails at the
+    preflight and looks exactly like a broken password.
+  */
+  process.env.WEB_ORIGINS ??
+  "http://localhost:3000,http://localhost:3100,http://localhost:3200"
 )
   .split(",")
   .map((origin) => origin.trim())

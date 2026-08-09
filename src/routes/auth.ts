@@ -188,7 +188,8 @@ authRoutes.post(
       would let anybody holding a stolen one lock the rightful owner out of
       rotating theirs.
     */
-    const verdict = await consumeAll([[`refresh:ip:${callerIp(c)}`, LIMITS.refreshPerIp]]);
+    const ip = callerIp(c);
+    const verdict = await consumeAll([[`refresh:ip:${ip}`, LIMITS.refreshPerIp]]);
     if (!verdict.allowed) return tooMany(c, verdict.retryAfter);
 
     const presented = readRefreshToken(c, c.req.valid("json").refreshToken);
@@ -201,6 +202,21 @@ authRoutes.post(
       clearRefreshCookie(c);
       return c.json({ error: result.reason }, 401);
     }
+    /*
+      Refunded, for the same reason as the password door and with more force.
+
+      This endpoint runs on **every** cold page load — a bookmark, a refresh, a
+      new tab, the first open of the morning — because the access token lives in
+      memory and dies with the document. Thirty an hour across an office sharing
+      one NAT address is a quiet morning, and the failure was vicious: everybody
+      is signed out, signing in again works, and the very next page load
+      refreshes, fails, and signs them out again. A loop nobody can escape by
+      doing the obvious thing.
+
+      Found by the E2E suite, which loads pages the way a person does. The
+      earlier sign-in fix closed the door and left this corridor open.
+    */
+    await refund(`refresh:ip:${ip}`);
     setRefreshCookie(c, result.refreshToken);
     return c.json({
       accessToken: result.accessToken,
