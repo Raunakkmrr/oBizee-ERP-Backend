@@ -9,5 +9,12 @@ export default defineConfig({
      * Same root cause as the note in scripts/db-generate.sh.
      */
     exclude: ["**/node_modules/**", "**/dist/**", "**/._*"],
+    /**
+     * Several tests here fail a sign-in on purpose, and the limiter counts
+     * those correctly. Run back to back with the Playwright suite from the same
+     * address, the budget runs out and a test expecting 401 gets 429 — which
+     * reads as the product being broken rather than the limiter working.
+     */
+    globalSetup: ["./src/test/clear-budgets.ts"],
   },
 });
