@@ -177,130 +177,126 @@ leadRoutes.get("/lookup", requirePermission("lead:read"), async (c) => {
   if (!phone) return c.json({ match: null });
 
   /*
-    An open lead wins, and `convertedCustomerId is null` is what makes it open.
-    Without that clause a caller who became a customer last March still matched
-    as a lead, and the coordinator was told to "open the existing lead" for
-    somebody who has been on the books for months — the opposite of FR-102's
-    instruction, which is to raise a job for a customer and not run a sales
-    cycle at them.
-  */
-  const owner = alias(users, "lead_owner");
-  const [openLead] = await db
-    .select({
-      leadId: leads.id,
-      reference: leads.reference,
-      name: leads.name,
-      stage: leads.stage,
-      owner: owner.name,
-      nextFollowUpAt: leads.nextFollowUpAt,
-    })
-    .from(leads)
-    .leftJoin(owner, eq(leads.ownerUserId, owner.id))
-    .where(
-      and(
-        eq(leads.tenantId, tenantId),
-        eq(leads.phoneE164, phone),
-        isNull(leads.convertedCustomerId),
-      ),
-    )
-    .limit(1);
+    One statement, and the reason is the budget.
 
-  if (openLead) {
+    §9.1 gives this 250ms at p95 because the panel has to appear while the
+    customer is still talking. Written as five sequential queries — lead, then
+    customer, then job history, then open jobs, then the ledger — it measured
+    477ms, and none of that was the database working: each was a separate round
+    trip to Neon, about a hundred milliseconds of Delhi-to-Singapore apiece.
+    Composed into one it is a single trip, and the shape of the answer is
+    unchanged.
+
+    Two rules the branches encode. An open lead wins — `converted_customer_id
+    is null` is what makes it open, and without that clause somebody who became
+    a customer last March came back as a lead, so the coordinator was told to
+    run a sales cycle at a customer of six months. A matched customer carries
+    the three facts §6.7.2 says decide her next sentence: how well they are
+    known, whether somebody is already going, and whether they owe us money.
+  */
+  const found = await db.execute(sql`
+    with lead_hit as (
+      select l.id, l.reference, l.name, l.stage,
+             u.name as owner_name, l.next_follow_up_at
+        from leads l
+        left join users u on u.id = l.owner_user_id
+       where l.tenant_id = ${tenantId}
+         and l.phone_e164 = ${phone}
+         and l.converted_customer_id is null
+       limit 1
+    ),
+    customer_hit as (
+      select c.id, c.name
+        from contacts ct
+        join sites s on s.id = ct.site_id
+        join customers c on c.id = s.customer_id
+       where ct.tenant_id = ${tenantId}
+         and ct.phone_e164 = ${phone}
+         and not exists (select 1 from lead_hit)
+       limit 1
+    ),
+    history as (
+      select
+        count(*) filter (where j.status in ('WORK_DONE','SIGNED_OFF')) as past_jobs,
+        max(j.scheduled_date) filter (where j.status in ('WORK_DONE','SIGNED_OFF')) as last_job_date,
+        count(*) filter (where j.status not in ('WORK_DONE','SIGNED_OFF','CANCELLED')) as open_jobs
+        from jobs j
+       where j.tenant_id = ${tenantId}
+         and j.customer_id = (select id from customer_hit)
+    ),
+    -- Issued only. A draft is not a demand, and telling somebody they owe money
+    -- on a document never sent is how a coordinator ends up apologising.
+    ledger as (
+      select coalesce(sum(i.grand_total_paise), 0) as billed,
+             coalesce(sum(paid.amount), 0) as paid
+        from invoices i
+        left join lateral (
+          select sum(p.amount_paise) as amount
+            from payments p where p.invoice_id = i.id
+        ) paid on true
+       where i.tenant_id = ${tenantId}
+         and i.customer_id = (select id from customer_hit)
+         and i.status = 'ISSUED'
+    )
+    select
+      (select id from lead_hit) as lead_id,
+      (select reference from lead_hit) as lead_reference,
+      (select name from lead_hit) as lead_name,
+      (select stage from lead_hit) as lead_stage,
+      (select owner_name from lead_hit) as lead_owner,
+      (select next_follow_up_at from lead_hit) as lead_next,
+      (select id from customer_hit) as customer_id,
+      (select name from customer_hit) as customer_name,
+      (select past_jobs from history) as past_jobs,
+      (select last_job_date from history) as last_job_date,
+      (select open_jobs from history) as open_jobs,
+      (select billed from ledger) as billed,
+      (select paid from ledger) as paid
+  `);
+
+  const [row] = found.rows as {
+    lead_id: string | null;
+    lead_reference: string | null;
+    lead_name: string | null;
+    lead_stage: string | null;
+    lead_owner: string | null;
+    lead_next: string | null;
+    customer_id: string | null;
+    customer_name: string | null;
+    past_jobs: number | null;
+    last_job_date: string | null;
+    open_jobs: number | null;
+    billed: string | null;
+    paid: string | null;
+  }[];
+
+  if (row?.lead_id) {
     return c.json({
       match: {
         kind: "lead",
-        leadId: openLead.leadId,
-        reference: openLead.reference,
-        name: openLead.name,
-        stage: openLead.stage,
+        leadId: row.lead_id,
+        reference: row.lead_reference,
+        name: row.lead_name,
+        stage: row.lead_stage,
         // Unassigned is a real state and the screen says so, rather than
         // printing nothing and leaving the coordinator to guess who to ask.
-        owner: openLead.owner ?? "Unassigned",
-        nextFollowUp: openLead.nextFollowUpAt?.toISOString() ?? "",
+        owner: row.lead_owner ?? "Unassigned",
+        nextFollowUp: row.lead_next ?? "",
       },
     });
   }
 
-  /*
-    Otherwise a number already on a site contact: a repeat customer, and the
-    history is worth reading before ringing back.
-  */
-  const [existing] = await db
-    .select({ customerId: customers.id, name: customers.name })
-    .from(contacts)
-    .innerJoin(sites, eq(contacts.siteId, sites.id))
-    .innerJoin(customers, eq(sites.customerId, customers.id))
-    .where(and(eq(contacts.tenantId, tenantId), eq(contacts.phoneE164, phone)))
-    .limit(1);
-
-  if (!existing) return c.json({ match: null });
-
-  /*
-    The three facts §6.7.2 says decide the coordinator's next sentence: how well
-    this customer is known, whether somebody is already going, and whether they
-    owe us money. Counted here rather than fetched by the browser, because this
-    whole panel has a p95 budget of 250ms and has to appear while the customer
-    is still talking.
-  */
-  const [history] = await db
-    .select({
-      pastJobs: count(),
-      lastJobDate: sql<string | null>`max(${jobs.scheduledDate})`,
-    })
-    .from(jobs)
-    .where(
-      and(
-        eq(jobs.tenantId, tenantId),
-        eq(jobs.customerId, existing.customerId),
-        inArray(jobs.status, ["WORK_DONE", "SIGNED_OFF"]),
-      ),
-    );
-
-  const [open] = await db
-    .select({ n: count() })
-    .from(jobs)
-    .where(
-      and(
-        eq(jobs.tenantId, tenantId),
-        eq(jobs.customerId, existing.customerId),
-        notInArray(jobs.status, ["WORK_DONE", "SIGNED_OFF", "CANCELLED"]),
-      ),
-    );
-
-  /*
-    Issued invoices less what has been paid against them. Drafts are excluded
-    deliberately — a draft is not a demand, and telling somebody they owe money
-    on a document never sent is how a coordinator ends up apologising.
-  */
-  const [ledger] = await db
-    .select({
-      billed: sql<string>`coalesce(sum(${invoices.grandTotalPaise}), 0)`,
-      paid: sql<string>`coalesce((
-        select sum(${payments.amountPaise}) from ${payments}
-        where ${payments.invoiceId} in (
-          select id from ${invoices}
-          where ${invoices.tenantId} = ${tenantId}
-            and ${invoices.customerId} = ${existing.customerId}
-            and ${invoices.status} = 'ISSUED')), 0)`,
-    })
-    .from(invoices)
-    .where(
-      and(
-        eq(invoices.tenantId, tenantId),
-        eq(invoices.customerId, existing.customerId),
-        eq(invoices.status, "ISSUED"),
-      ),
-    );
+  if (!row?.customer_id) return c.json({ match: null });
 
   return c.json({
     match: {
       kind: "customer",
-      customerId: existing.customerId,
-      name: existing.name,
-      pastJobs: Number(history?.pastJobs ?? 0),
-      lastJobDate: history?.lastJobDate ?? null,
-      openJobs: Number(open?.n ?? 0),
-      outstandingPaise: Number(ledger?.billed ?? 0) - Number(ledger?.paid ?? 0),
+      customerId: row.customer_id,
+      name: row.customer_name,
+      pastJobs: Number(row.past_jobs ?? 0),
+      lastJobDate: row.last_job_date ?? null,
+      openJobs: Number(row.open_jobs ?? 0),
+      outstandingPaise: Number(row.billed ?? 0) - Number(row.paid ?? 0),
     },
   });
 });
