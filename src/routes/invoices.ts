@@ -3,7 +3,7 @@ import { z } from "zod";
 import { and, asc, count, eq } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import {
-  branches, contracts, customers, invoiceLines, invoices, jobs, sites, tenants,
+  branches, contracts, customers, invoiceLines, invoices, jobs, payments, sites, tenants,
 } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
@@ -271,16 +271,22 @@ invoiceRoutes.post(
     // FR-812 — computed here. A client-supplied total can round differently.
     const totals = computeTotals(lines, derivation.head);
 
+    /*
+      No number yet — a draft is not a document anybody can refer to.
+
+      It used to draw one here, so abandoning a draft left a permanent hole in
+      a series Rule 46(b) wants consecutive, and two drafts raised in one order
+      and issued in another gave dates that ran backwards against numbers. The
+      number is drawn at issue, where the document becomes real.
+    */
     const now = new Date();
-    const sequence = await nextInSeries(caller.tenantId, branchId, "invoice", now);
-    const number = formatNumber("invoice", branch.invoiceSeriesPrefix, sequence, now);
 
     const [invoice] = await db
       .insert(invoices)
       .values({
         tenantId: caller.tenantId,
         branchId,
-        number,
+        number: null,
         financialYear: financialYear(now),
         jobId,
         contractId,
@@ -313,7 +319,8 @@ invoiceRoutes.post(
       })),
     );
 
-    await audit(caller, "CREATE_INVOICE", `Raised ${number} for ${resolved.billTo.name}`, {
+    // A draft has no number to name it by, so the customer does the naming.
+    await audit(caller, "CREATE_INVOICE", `Drafted an invoice for ${resolved.billTo.name}`, {
       table: "invoices",
       id: invoice!.id,
     });
@@ -350,7 +357,12 @@ invoiceRoutes.post("/:id/issue", requirePermission("invoice:finalise"), async (c
   const id = c.req.param("id");
 
   const [invoice] = await db
-    .select({ id: invoices.id, number: invoices.number, status: invoices.status })
+    .select({
+      id: invoices.id,
+      number: invoices.number,
+      status: invoices.status,
+      branchId: invoices.branchId,
+    })
     .from(invoices)
     .where(and(eq(invoices.id, id), eq(invoices.tenantId, caller.tenantId)))
     .limit(1);
@@ -359,6 +371,9 @@ invoiceRoutes.post("/:id/issue", requirePermission("invoice:finalise"), async (c
   // Issuing twice is not idempotent housekeeping; it is a second document.
   if (invoice.status === "ISSUED") {
     return c.json({ error: `${invoice.number} has already been issued.` }, 409);
+  }
+  if (invoice.status === "CANCELLED") {
+    return c.json({ error: `${invoice.number} was cancelled and cannot be issued.` }, 409);
   }
 
   const [lines] = await db
@@ -369,16 +384,120 @@ invoiceRoutes.post("/:id/issue", requirePermission("invoice:finalise"), async (c
     return c.json({ error: "An invoice with no lines bills nothing." }, 409);
   }
 
+  const [branch] = await db
+    .select({ id: branches.id, invoiceSeriesPrefix: branches.invoiceSeriesPrefix })
+    .from(branches)
+    .where(eq(branches.id, invoice.branchId))
+    .limit(1);
+  if (!branch) return c.json({ error: "No branch on file" }, 400);
+
+  /*
+    The number is drawn here, and the date with it.
+
+    Both together, or the series stops meaning anything: a number allocated
+    today against a date from last week is exactly the backwards-running series
+    this change exists to prevent. `next_in_series` is atomic, so two people
+    issuing at once get two numbers rather than racing for one.
+  */
+  const now = new Date();
+  const sequence = await nextInSeries(caller.tenantId, branch.id, "invoice", now);
+  const number = formatNumber("invoice", branch.invoiceSeriesPrefix, sequence, now);
+
   const [updated] = await db
     .update(invoices)
-    .set({ status: "ISSUED" })
+    .set({
+      status: "ISSUED",
+      number,
+      issueDate: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`,
+      financialYear: financialYear(now),
+    })
     .where(and(eq(invoices.id, id), eq(invoices.status, "DRAFT")))
     .returning({ id: invoices.id, number: invoices.number, status: invoices.status });
 
-  await audit(caller, "ISSUE_INVOICE", `Issued ${invoice.number}`, {
+  await audit(caller, "ISSUE_INVOICE", `Issued ${number}`, {
     table: "invoices",
     id,
   });
+
+  return c.json(updated);
+});
+
+/**
+ * Cancel an invoice.
+ *
+ * **The number is kept.** Rule 46(b) wants one consecutive series per
+ * financial year, and reusing a number that has been issued puts two documents
+ * in that series under the same identity — which is the single thing the
+ * series exists to prevent, and unarguable once the first one is in a filed
+ * GSTR-1. A cancelled number is spent; the return reports it as cancelled.
+ *
+ * A draft needs no cancelling in this sense: it never had a number to spend,
+ * which is the point of allocating at issue.
+ *
+ * If the supply happened and the amount is wrong, this is the wrong tool — a
+ * credit note under §34 is, and it is a separate document with its own series.
+ */
+invoiceRoutes.post("/:id/cancel", requirePermission("invoice:finalise"), async (c) => {
+  const caller = c.get("caller");
+  const id = c.req.param("id");
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({ reason: undefined }));
+
+  if (!body.reason || body.reason.trim().length < 3) {
+    return c.json(
+      { error: "Say why it is being cancelled — a cancelled number is asked about.", field: "reason" },
+      400,
+    );
+  }
+
+  const [invoice] = await db
+    .select({ id: invoices.id, number: invoices.number, status: invoices.status })
+    .from(invoices)
+    .where(and(eq(invoices.id, id), eq(invoices.tenantId, caller.tenantId)))
+    .limit(1);
+  if (!invoice) return c.json({ error: "No such invoice" }, 404);
+  if (invoice.status === "CANCELLED") {
+    return c.json({ error: `${invoice.number} is already cancelled.` }, 409);
+  }
+
+  const [paid] = await db
+    .select({ value: count() })
+    .from(payments)
+    .where(eq(payments.invoiceId, id));
+  if (Number(paid?.value ?? 0) > 0) {
+    return c.json(
+      {
+        error: `${invoice.number} has payments recorded against it. Refund or credit-note it instead — cancelling would leave money against a document that no longer exists.`,
+      },
+      409,
+    );
+  }
+
+  /*
+    A draft is deleted rather than cancelled: there is nothing to keep a record
+    of, no number was spent, and leaving CANCELLED rows with no number would
+    make the invoice register a list of things that never happened.
+  */
+  if (invoice.status === "DRAFT") {
+    await db.delete(invoices).where(eq(invoices.id, id));
+    await audit(caller, "DISCARD_DRAFT_INVOICE", `Discarded a draft — ${body.reason.trim()}`, {
+      table: "invoices",
+      id,
+    });
+    return c.json({ id, discarded: true });
+  }
+
+  const [updated] = await db
+    .update(invoices)
+    .set({ status: "CANCELLED" })
+    .where(eq(invoices.id, id))
+    .returning({ id: invoices.id, number: invoices.number, status: invoices.status });
+
+  await audit(
+    caller,
+    "CANCEL_INVOICE",
+    `Cancelled ${invoice.number} — ${body.reason.trim()}. The number stays spent.`,
+    { table: "invoices", id },
+  );
 
   return c.json(updated);
 });

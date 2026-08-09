@@ -414,7 +414,20 @@ export const invoices = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
     branchId: uuid("branch_id").notNull().references(() => branches.id),
-    number: text("number").notNull(),
+    /**
+     * Allocated when the invoice is **issued**, not when the draft is made.
+     *
+     * Rule 46(b) wants one consecutive series per financial year. Numbering at
+     * draft meant an abandoned draft left a hole, and two drafts raised in one
+     * order and issued in another gave a series whose dates ran backwards
+     * against its numbers. Null until issue; the guard below refuses an issued
+     * invoice without one.
+     *
+     * A cancelled invoice **keeps** its number. Reusing it would put two
+     * documents in the series under the same number, which is the one thing
+     * the series exists to prevent.
+     */
+    number: text("number"),
     /** Which financial year's series this number came from — FR-811. */
     financialYear: integer("financial_year").notNull(),
     jobId: uuid("job_id").references(() => jobs.id),

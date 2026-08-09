@@ -311,6 +311,85 @@ describe.skipIf(!reachable)("how the API refuses", () => {
     });
   });
 
+  describe("the invoice series", () => {
+    const post = (path: string, body: unknown) =>
+      fetch(`${BASE}${path}`, { method: "POST", headers: auth, body: JSON.stringify(body) });
+
+    async function draft() {
+      const { customers } = (await (
+        await fetch(`${BASE}/api/customers`, { headers: auth })
+      ).json()) as { customers: { id: string; sites: { id: string }[] }[] };
+      const c = customers.find((x) => x.sites.length > 0)!;
+      return (await (
+        await post("/api/invoices", {
+          customerId: c.id,
+          siteId: c.sites[0]!.id,
+          lines: [
+            { description: "series probe", code: "9987", kind: "service", qty: 1, ratePaise: 100_00, ratePercent: 18 },
+          ],
+        })
+      ).json()) as { id: string; number: string | null };
+    }
+
+    it("gives a draft no number, and numbers follow the order of issue", async () => {
+      /*
+        Rule 46(b) wants one consecutive series per financial year. Numbering
+        at draft meant an abandoned draft left a permanent hole, and two drafts
+        raised in one order and issued in another gave a series whose dates ran
+        backwards against its numbers.
+      */
+      const a = await draft();
+      const b = await draft();
+      expect(a.number).toBeNull();
+      expect(b.number).toBeNull();
+
+      const issuedB = (await (await post(`/api/invoices/${b.id}/issue`, {})).json()) as { number: string };
+      const issuedA = (await (await post(`/api/invoices/${a.id}/issue`, {})).json()) as { number: string };
+
+      const seq = (n: string) => Number(/(\d+)\s*$/.exec(n)![1]);
+      expect(seq(issuedA.number), "the later issue took the lower number").toBeGreaterThan(seq(issuedB.number));
+    });
+
+    it("costs nothing to abandon a draft", async () => {
+      const d = await draft();
+      const res = await post(`/api/invoices/${d.id}/cancel`, { reason: "raised by mistake" });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { discarded: boolean }).discarded).toBe(true);
+    });
+
+    it("keeps a cancelled invoice's number spent", async () => {
+      /*
+        Reusing it would put two documents in the series under one number,
+        which is the single thing the series exists to prevent — and
+        unarguable once the first is in a filed GSTR-1.
+      */
+      const d = await draft();
+      const issued = (await (await post(`/api/invoices/${d.id}/issue`, {})).json()) as { number: string };
+
+      const cancelled = (await (
+        await post(`/api/invoices/${d.id}/cancel`, { reason: "customer withdrew" })
+      ).json()) as { number: string; status: string };
+
+      expect(cancelled.number).toBe(issued.number);
+      expect(cancelled.status).toBe("CANCELLED");
+      expect((await post(`/api/invoices/${d.id}/issue`, {})).status).toBe(409);
+    });
+
+    it("refuses to cancel an invoice with payments against it", async () => {
+      const d = await draft();
+      const issued = (await (await post(`/api/invoices/${d.id}/issue`, {})).json()) as { id: string };
+      await post("/api/payments", {
+        invoiceId: issued.id,
+        amountPaise: 100,
+        receivedOn: new Date().toISOString().slice(0, 10),
+        method: "UPI",
+      });
+
+      // Cancelling would leave money against a document that no longer exists.
+      expect((await post(`/api/invoices/${d.id}/cancel`, { reason: "changed mind" })).status).toBe(409);
+    });
+  });
+
   describe("access, granted and withdrawn", () => {
     const J = { "content-type": "application/json" };
     const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>

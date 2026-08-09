@@ -83,9 +83,10 @@ settingsRoutes.get("/numbering", requirePermission("settings:read"), async (c) =
   };
 
   const issued = new Map<string, number[]>();
-  const collect = (docType: string, rows: { number: string; branchId: string | null }[]) => {
+  const collect = (docType: string, rows: { number: string | null; branchId: string | null }[]) => {
     for (const row of rows) {
-      const n = sequenceOf(row.number);
+      // A draft has no number, so it is not part of the series to check.
+      const n = row.number ? sequenceOf(row.number) : null;
       if (n === null || !row.branchId) continue;
       const key = `${row.branchId}:${docType}`;
       issued.set(key, [...(issued.get(key) ?? []), n]);

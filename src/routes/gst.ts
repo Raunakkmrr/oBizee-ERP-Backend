@@ -168,6 +168,26 @@ export async function gstPeriod(tenantId: string, period: string) {
     let recomputedTax = 0;
 
     for (const invoice of rows) {
+      /*
+        Drafts are not supplies.
+
+        They used to be counted into B2B and B2CS, so the working paper
+        reported turnover for bills nobody had issued. The export was blocked
+        while any existed, so a wrong return was never filed — but the figures
+        on screen were the ones an accountant reads before deciding to file,
+        and they were too high. A draft belongs in readiness, below, and
+        nowhere else.
+      */
+      if (invoice.status === "DRAFT") {
+        unresolved.PENDING_IRN += 1;
+        blocking.push({
+          invoice: invoice.number ?? "An unnumbered draft",
+          reason: "is still a draft, so it is not part of this return",
+          href: `/api/invoices/${invoice.id}`,
+        });
+        continue;
+      }
+
       registerTaxable += invoice.taxablePaise;
       registerTax += invoice.totalTaxPaise;
 
@@ -182,7 +202,7 @@ export async function gstPeriod(tenantId: string, period: string) {
         tables.B2B!.failed = true;
         tables.B2CS!.failed = true;
         blocking.push({
-          invoice: invoice.number,
+          invoice: invoice.number ?? "An unnumbered draft",
           reason: "has no lines, so nothing can be reported for it",
           href: `/api/invoices/${invoice.id}`,
         });
@@ -218,16 +238,8 @@ export async function gstPeriod(tenantId: string, period: string) {
         // A B2C supply above ₹2.5 lakh is reported as B2CL with the place of
         // supply, which needs the customer's state — not a summary line.
         blocking.push({
-          invoice: invoice.number,
+          invoice: invoice.number ?? "An unnumbered draft",
           reason: "is over ₹2.5 lakh to an unregistered customer and needs a GSTIN or a B2CL entry",
-          href: `/api/invoices/${invoice.id}`,
-        });
-      }
-      if (invoice.status === "DRAFT") {
-        unresolved.PENDING_IRN += 1;
-        blocking.push({
-          invoice: invoice.number,
-          reason: "is still a draft",
           href: `/api/invoices/${invoice.id}`,
         });
       }
