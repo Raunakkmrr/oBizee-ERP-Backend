@@ -20,9 +20,10 @@
  *
  * Re-running replaces the day rather than doubling it.
  */
-import { and, eq, inArray, like } from "drizzle-orm";
+import { and, eq, inArray, like, or } from "drizzle-orm";
 
 import { db } from "./client.ts";
+import { formatNumber, nextInSeries } from "../lib/series.ts";
 import { customers, jobEvents, jobs, leads, sites, tenants, users } from "./schema.ts";
 
 const LEGAL_NAME = "Shakti Cooling Systems Pvt Ltd";
@@ -94,16 +95,25 @@ export async function seedDay(): Promise<void> {
   const tomorrow = isoInIndia(1);
 
   /*
-    Replace this fixture's own rows, identified by their numbers rather than by
-    the day they sit on. Deleting by date only worked on the day they were
-    written: run this tomorrow and `J-DAY-01` is still on yesterday's board, so
-    the insert collides with `jobs_tenant_number_uq` and the fixture that exists
-    to be re-runnable stops being re-runnable. Events cascade with their jobs.
+    Replace the day, and sweep up the old hand-numbered rows.
+
+    Deleting by date is right again now that numbers come from the series and
+    cannot collide across runs. The `J-DAY-%` clause clears rows left by the
+    earlier version of this fixture, which invented numbers and so made the
+    numbering screen report hundreds of missing ones. Events cascade.
   */
   const stale = await db
     .select({ id: jobs.id })
     .from(jobs)
-    .where(and(eq(jobs.tenantId, tenantId), like(jobs.jobNumber, "J-DAY-%")));
+    .where(
+      and(
+        eq(jobs.tenantId, tenantId),
+        or(
+          inArray(jobs.scheduledDate, [today, tomorrow]),
+          like(jobs.jobNumber, "J-DAY-%"),
+        ),
+      ),
+    );
   if (stale.length > 0) {
     await db.delete(jobs).where(
       inArray(
@@ -116,7 +126,6 @@ export async function seedDay(): Promise<void> {
   const day = [
     {
       site: at("Deshmukh"),
-      jobNumber: `J-DAY-01`,
       serviceType: "Chiller breakdown",
       slot: "9-1",
       status: "CREATED" as const,
@@ -128,7 +137,6 @@ export async function seedDay(): Promise<void> {
     },
     {
       site: at("Shakti"),
-      jobNumber: `J-DAY-02`,
       serviceType: "Cold room AMC",
       slot: "9-1",
       status: "EN_ROUTE" as const,
@@ -140,7 +148,6 @@ export async function seedDay(): Promise<void> {
     },
     {
       site: at("Green Park"),
-      jobNumber: `J-DAY-03`,
       serviceType: "Air conditioning service",
       slot: "1-5",
       status: "ON_SITE" as const,
@@ -152,7 +159,6 @@ export async function seedDay(): Promise<void> {
     },
     {
       site: at("Sethi"),
-      jobNumber: `J-DAY-04`,
       serviceType: "Deep freezer repair",
       slot: "1-5",
       status: "PARTS_AWAITED" as const,
@@ -164,7 +170,6 @@ export async function seedDay(): Promise<void> {
     },
     {
       site: at("Sunrise"),
-      jobNumber: `J-DAY-05`,
       serviceType: "Water purifier service",
       slot: "5-8",
       status: "SIGNED_OFF" as const,
@@ -176,7 +181,6 @@ export async function seedDay(): Promise<void> {
     },
     {
       site: at("Mrs. Deshpande"),
-      jobNumber: `J-DAY-06`,
       serviceType: "Refrigerator repair",
       slot: "11:30",
       status: "ASSIGNED" as const,
@@ -188,13 +192,32 @@ export async function seedDay(): Promise<void> {
     },
   ];
 
+  /*
+    Numbers drawn from the real series, not invented.
+
+    `J-DAY-01` parsed as sequence 1, so the numbering screen — which compares
+    the counter against every document present — saw a job numbered 1 beside a
+    counter at 475 and reported four hundred missing numbers. The fixture was
+    manufacturing the very defect that screen exists to find.
+  */
+  const numbers = await Promise.all(
+    day.map(async () =>
+      formatNumber(
+        "job",
+        "J",
+        await nextInSeries(tenantId, branchId, "job", new Date()),
+        new Date(),
+      ),
+    ),
+  );
+
   const inserted = await db
     .insert(jobs)
     .values(
-      day.map((j) => ({
+      day.map((j, i) => ({
         tenantId,
         branchId,
-        jobNumber: j.jobNumber,
+        jobNumber: numbers[i]!,
         customerId: j.site.customerId,
         siteId: j.site.siteId,
         serviceType: j.serviceType,
@@ -228,7 +251,7 @@ export async function seedDay(): Promise<void> {
     {
       tenantId,
       branchId,
-      jobNumber: "J-DAY-07",
+      jobNumber: formatNumber("job", "J", await nextInSeries(tenantId, branchId, "job", new Date()), new Date()),
       customerId: at("Shakti").customerId,
       siteId: at("Shakti").siteId,
       serviceType: "Chiller AMC",
@@ -240,7 +263,7 @@ export async function seedDay(): Promise<void> {
     {
       tenantId,
       branchId,
-      jobNumber: "J-DAY-08",
+      jobNumber: formatNumber("job", "J", await nextInSeries(tenantId, branchId, "job", new Date()), new Date()),
       customerId: at("Green Park").customerId,
       siteId: at("Green Park").siteId,
       serviceType: "AC service",
