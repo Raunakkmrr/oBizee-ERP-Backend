@@ -139,3 +139,22 @@ export const contactRoleEnum = pgEnum("contact_role", [
   "ACCOUNTS",
   "OTHER",
 ]);
+
+/** Where stock sits. A van belongs to a technician; a store belongs to a branch. */
+export const stockLocationKindEnum = pgEnum("stock_location_kind", ["STORE", "VAN"]);
+
+/**
+ * Why stock moved — FR-601 to FR-604.
+ *
+ * Every movement has a reason, because "the count changed" is not an answer
+ * anybody can act on. `ADJUSTMENT` is the one that admits the count was wrong,
+ * and it is deliberately its own kind rather than a silent correction: a stock
+ * take that quietly rewrites a balance hides the shrinkage it exists to find.
+ */
+export const stockMovementKindEnum = pgEnum("stock_movement_kind", [
+  "RECEIPT",
+  "ISSUE_TO_VAN",
+  "RETURN_TO_STORE",
+  "CONSUME",
+  "ADJUSTMENT",
+]);

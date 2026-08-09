@@ -350,6 +350,109 @@ export const jobs = pgTable(
   ],
 );
 
+/**
+ * The parts catalogue — FR-601.
+ *
+ * A part is a thing the firm buys and fits, with its own HSN: parts are taxed
+ * at their own rate, not the service's, which is why the code lives here and
+ * not on the invoice line that happens to mention it.
+ */
+export const parts = pgTable(
+  "parts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    name: text("name").notNull(),
+    /** HSN — goods, so eight digits above the AATO threshold (FR-803). */
+    code: text("code").notNull(),
+    unit: text("unit").notNull().default("no"),
+    /**
+     * The level at which somebody should reorder.
+     *
+     * Zero means "not tracked", not "reorder never" — a part with no level set
+     * is one nobody has decided about, and the screen says so rather than
+     * reporting it as comfortably stocked.
+     */
+    reorderLevel: integer("reorder_level").notNull().default(0),
+    preferredVendorId: uuid("preferred_vendor_id").references(() => vendors.id),
+    /** What it last cost. Null until one has actually been bought. */
+    unitCostPaise: money("unit_cost_paise"),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique("parts_tenant_name_uq").on(t.tenantId, t.name),
+    index("parts_tenant_idx").on(t.tenantId, t.active),
+  ],
+);
+
+/** Where stock sits: the branch store, or a technician's van (§6.14). */
+export const stockLocations = pgTable(
+  "stock_locations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    name: text("name").notNull(),
+    kind: e.stockLocationKindEnum("kind").notNull(),
+    /**
+     * Whose van it is.
+     *
+     * §6.14: "Van 3" is not actionable and "Ramesh's van" is, because you can
+     * ring Ramesh. Null for a store.
+     */
+    technicianId: uuid("technician_id").references(() => users.id),
+    branchId: uuid("branch_id").references(() => branches.id),
+    active: boolean("active").notNull().default(true),
+  },
+  (t) => [unique("stock_locations_tenant_name_uq").on(t.tenantId, t.name)],
+);
+
+/**
+ * Every movement of stock — the ledger the balances are read from.
+ *
+ * **On hand is derived, never stored.** A stored balance and a movement
+ * history are two records of one fact, and the day they disagree there is no
+ * way to tell which is right. Summing the ledger is slower and always true.
+ *
+ * Insert-only, enforced by a trigger in `0009_stock.sql`. Correcting a
+ * movement means recording the correction, which is what `ADJUSTMENT` is for —
+ * editing history would erase the shrinkage a stock take exists to reveal.
+ */
+export const stockMovements = pgTable(
+  "stock_movements",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    partId: uuid("part_id").notNull().references(() => parts.id),
+    kind: e.stockMovementKindEnum("kind").notNull(),
+    /** Null when stock comes from outside — a purchase has no source location. */
+    fromLocationId: uuid("from_location_id").references(() => stockLocations.id),
+    /** Null when stock leaves — consumed on a job, or written off. */
+    toLocationId: uuid("to_location_id").references(() => stockLocations.id),
+    /** Always positive. Direction is `from` and `to`, never a negative quantity. */
+    qty: integer("qty").notNull(),
+    /** The job it was fitted on, for a CONSUME. */
+    jobId: uuid("job_id").references(() => jobs.id),
+    /** The purchase it arrived on, for a RECEIPT. */
+    purchaseBillId: uuid("purchase_bill_id").references(() => purchaseBills.id),
+    /**
+     * The delivery challan number for stock leaving the store.
+     *
+     * Rule 55: goods moved without a supply still travel on a document. A van
+     * loaded with no challan is one of §6.14's three exceptions, and this
+     * column is what makes it findable.
+     */
+    challanNumber: text("challan_number"),
+    note: text("note"),
+    actorUserId: uuid("actor_user_id").references(() => users.id),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("stock_movements_part_idx").on(t.tenantId, t.partId),
+    index("stock_movements_when_idx").on(t.tenantId, t.occurredAt),
+  ],
+);
+
 /** FR-205: one primary technician and any number of helpers at half weight. */
 export const jobHelpers = pgTable(
   "job_helpers",

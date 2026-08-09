@@ -24,7 +24,7 @@ import { and, eq, inArray, like, or } from "drizzle-orm";
 
 import { db } from "./client.ts";
 import { formatNumber, nextInSeries } from "../lib/series.ts";
-import { customers, jobEvents, jobs, leads, sites, tenants, users } from "./schema.ts";
+import { customers, jobEvents, jobParts, jobs, leads, sites, tenants, users } from "./schema.ts";
 
 const LEGAL_NAME = "Shakti Cooling Systems Pvt Ltd";
 
@@ -312,6 +312,31 @@ export async function seedDay(): Promise<void> {
       },
     ])
     .returning({ id: leads.id });
+
+  /*
+    A part fitted on a job that is in no catalogue — §6.14's second exception.
+
+    A technician writes what he used on the job card, nobody adds it to the
+    catalogue, and it is bought again next month because no reorder level
+    exists for a part the system has never heard of.
+  */
+  const [alreadyFitted] = await db
+    .select({ id: jobParts.id })
+    .from(jobParts)
+    .where(and(eq(jobParts.tenantId, tenantId), eq(jobParts.name, "Thermostat KSD301")))
+    .limit(1);
+  if (!alreadyFitted && inserted[4]) {
+    await db.insert(jobParts).values({
+      tenantId,
+      jobId: inserted[4].id,
+      name: "Thermostat KSD301",
+      code: "90322000",
+      qty: 1,
+      unit: "no",
+      ratePaise: 85_000,
+      ratePercent: 18,
+    });
+  }
 
   console.log(`seeded ${inserted.length} jobs for ${today}, 2 for ${tomorrow}, ${open.length} leads due`);
 }

@@ -1,8 +1,11 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "./client.ts";
 import {
   assets,
   branches,
+  parts,
+  stockLocations,
+  stockMovements,
   contacts,
   customers,
   rateRows,
@@ -93,6 +96,127 @@ export async function ensureContactsAndAssets(tenantId: string): Promise<void> {
 
 }
 
+/**
+ * A store, two vans, and enough movement to exercise §6.14.
+ *
+ * Deliberately includes each of the three exceptions, because a stock screen
+ * whose exception list is always empty has never been looked at properly:
+ *
+ * - a **negative balance** on a van, from a part fitted that was never issued;
+ * - an **issue with no challan**, which Rule 55 wants a document for;
+ * - and `job_parts` carries a name that is in no catalogue, which is the
+ *   **uncatalogued** case — a part bought again every month because nothing
+ *   knows it exists.
+ */
+export async function ensureStock(tenantId: string, branchId: string): Promise<void> {
+  /*
+    Adds what is missing rather than refusing when anything exists.
+
+    The ledger is insert-only — the trigger refuses a DELETE, which is the
+    point — so this fixture cannot be torn down and rebuilt. It has to be able
+    to extend an existing one instead, or a part added here later can never
+    reach a database that has already been seeded once.
+  */
+  const already = await db
+    .select({ name: parts.name })
+    .from(parts)
+    .where(eq(parts.tenantId, tenantId));
+  const have = new Set(already.map((row) => row.name));
+
+  const technicians = await db
+    .select({ id: users.id, name: users.name })
+    .from(users)
+    .where(and(eq(users.tenantId, tenantId), eq(users.role, "technician")));
+
+  const [kirloskar] = await db
+    .select({ id: vendors.id })
+    .from(vendors)
+    .where(eq(vendors.tenantId, tenantId))
+    .limit(1);
+
+  const wanted = [
+      { tenantId, name: "Capacitor 40uF", code: "85321000", unit: "no", reorderLevel: 10, preferredVendorId: kirloskar?.id ?? null, unitCostPaise: 45_000 },
+      { tenantId, name: "Oil filter", code: "84212300", unit: "no", reorderLevel: 6, preferredVendorId: kirloskar?.id ?? null, unitCostPaise: 62_000 },
+      { tenantId, name: "Contactor 32A", code: "85364900", unit: "no", reorderLevel: 4, preferredVendorId: kirloskar?.id ?? null, unitCostPaise: 1_35_000 },
+      { tenantId, name: "R32 refrigerant", code: "38247800", unit: "kg", reorderLevel: 20, preferredVendorId: kirloskar?.id ?? null, unitCostPaise: 78_000 },
+      /*
+        The one that is always nearly out.
+
+        Every firm has one, and a reorder list with nothing on it is a screen
+        nobody has tested against real stock — the same "passing on zero rows"
+        the board fixture exists to prevent.
+      */
+      { tenantId, name: "Fan motor 1/4 HP", code: "84145930", unit: "no", reorderLevel: 5, preferredVendorId: kirloskar?.id ?? null, unitCostPaise: 4_20_000 },
+  ];
+
+  const fresh = wanted.filter((row) => !have.has(row.name));
+  if (fresh.length > 0) await db.insert(parts).values(fresh);
+
+  const catalogue = await db
+    .select({ id: parts.id, name: parts.name })
+    .from(parts)
+    .where(eq(parts.tenantId, tenantId));
+  const part = (name: string) => catalogue.find((p) => p.name === name)!.id;
+
+  // Only the parts just catalogued get an opening history.
+  const isNew = (name: string) => fresh.some((row) => row.name === name);
+
+  const existingPlaces = await db
+    .select({ id: stockLocations.id, name: stockLocations.name, kind: stockLocations.kind })
+    .from(stockLocations)
+    .where(eq(stockLocations.tenantId, tenantId));
+
+  const places = existingPlaces.length > 0 ? existingPlaces : await db
+    .insert(stockLocations)
+    .values([
+      { tenantId, name: "Nehru Place store", kind: "STORE" as const, branchId },
+      ...technicians.slice(0, 2).map((t) => ({
+        tenantId,
+        // §6.14: named by whose it is, because that is who you ring.
+        name: `${t.name.split(" ")[0]}'s van`,
+        kind: "VAN" as const,
+        technicianId: t.id,
+        branchId,
+      })),
+    ])
+    .returning({ id: stockLocations.id, name: stockLocations.name, kind: stockLocations.kind });
+  const store = places.find((p) => p.kind === "STORE")!.id;
+  const vans = places.filter((p) => p.kind === "VAN");
+
+  const moves: (typeof stockMovements.$inferInsert)[] = [
+    // Bought in.
+    { tenantId, partId: part("Capacitor 40uF"), kind: "RECEIPT", toLocationId: store, qty: 40 },
+    { tenantId, partId: part("Oil filter"), kind: "RECEIPT", toLocationId: store, qty: 24 },
+    { tenantId, partId: part("Contactor 32A"), kind: "RECEIPT", toLocationId: store, qty: 12 },
+    { tenantId, partId: part("R32 refrigerant"), kind: "RECEIPT", toLocationId: store, qty: 60 },
+    // Loaded out, with a challan.
+    { tenantId, partId: part("Capacitor 40uF"), kind: "ISSUE_TO_VAN", fromLocationId: store, toLocationId: vans[0]!.id, qty: 8, challanNumber: "DC/26-27/0011" },
+    { tenantId, partId: part("Oil filter"), kind: "ISSUE_TO_VAN", fromLocationId: store, toLocationId: vans[0]!.id, qty: 6, challanNumber: "DC/26-27/0012" },
+    // And once without — Rule 55's exception, on the screen rather than refused.
+    { tenantId, partId: part("R32 refrigerant"), kind: "ISSUE_TO_VAN", fromLocationId: store, toLocationId: vans[1]?.id ?? vans[0]!.id, qty: 15 },
+    // Fitted on jobs.
+    { tenantId, partId: part("Capacitor 40uF"), kind: "CONSUME", fromLocationId: vans[0]!.id, qty: 5 },
+    { tenantId, partId: part("Oil filter"), kind: "CONSUME", fromLocationId: vans[0]!.id, qty: 4 },
+    { tenantId, partId: part("R32 refrigerant"), kind: "CONSUME", fromLocationId: vans[1]?.id ?? vans[0]!.id, qty: 12 },
+    // Left over, brought back.
+    { tenantId, partId: part("Capacitor 40uF"), kind: "RETURN_TO_STORE", fromLocationId: vans[0]!.id, toLocationId: store, qty: 2 },
+    /*
+      A contactor fitted from a van it was never issued to. The van goes to −2,
+      which is the negative-balance exception: either the issue was never
+      recorded, or the part came from somewhere nobody wrote down.
+    */
+    { tenantId, partId: part("Contactor 32A"), kind: "CONSUME", fromLocationId: vans[0]!.id, qty: 2 },
+    // Bought six, fitted four: two left against a level of five.
+    { tenantId, partId: part("Fan motor 1/4 HP"), kind: "RECEIPT", toLocationId: store, qty: 6 },
+    { tenantId, partId: part("Fan motor 1/4 HP"), kind: "CONSUME", fromLocationId: store, qty: 4 },
+  ];
+  // Movements only for parts this run introduced; history is never rewritten.
+  const additions = moves.filter((move) =>
+    catalogue.some((p) => p.id === move.partId && isNew(p.name)),
+  );
+  if (additions.length > 0) await db.insert(stockMovements).values(additions);
+}
+
 export async function seed(): Promise<string> {
   const [existing] = await db
     .select({ id: tenants.id })
@@ -102,6 +226,12 @@ export async function seed(): Promise<string> {
 
   if (existing) {
     await ensureContactsAndAssets(existing.id);
+    const [branch] = await db
+      .select({ id: branches.id })
+      .from(branches)
+      .where(eq(branches.tenantId, existing.id))
+      .limit(1);
+    if (branch) await ensureStock(existing.id, branch.id);
     console.log(`tenant already seeded: ${existing.id}`);
     return existing.id;
   }
@@ -176,6 +306,8 @@ export async function seed(): Promise<string> {
     // Trading — no MSMED clock, which is the case people get wrong.
     { tenantId, name: "Metro Refrigeration Traders", gstin: "07AAFCM5566P1ZR", stateCode: "07", pan: "AAFCM5566P", panType: "COMPANY_FIRM_OTHER", msmeClass: "SMALL", udyamNumber: "UDYAM-DL-03-0044556", udyamActivity: "TRADING", hasWrittenAgreement: true, paymentTermsDays: 45 },
   ]);
+
+  await ensureStock(tenantId, branchId);
 
   await db.insert(rateRows).values([
     { tenantId, code: "9987", description: "Maintenance, repair and installation services", ratePercent: 18, effectiveFrom: "2017-07-01", note: "GST introduction — Notification 11/2017-CT(R)" },
