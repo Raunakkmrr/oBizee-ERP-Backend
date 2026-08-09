@@ -49,9 +49,22 @@ app.route("/api/payments", paymentRoutes);
 app.route("/api/money", moneyRoutes);
 app.route("/api/gst", gstRoutes);
 
+/**
+ * Who is signed in, according to the token.
+ *
+ * The web app's `useCurrentUser` reads this. It used to read `actingAs` from
+ * the browser store — a switcher that let anybody become the owner by picking
+ * them from a menu, which is fine for a fixture and unthinkable once real
+ * sign-in exists.
+ *
+ * `id` is here because the screens need it: the team form refuses to let you
+ * change your own role, and it can only know which person that is by
+ * comparing ids.
+ */
 app.get("/api/me", (c) => {
   const caller = c.get("caller");
   return c.json({
+    id: caller.userId,
     name: caller.name,
     role: caller.role,
     level: caller.level,
