@@ -1,14 +1,16 @@
 import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
-import { and, asc, count, desc, eq, inArray, notInArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "../db/client.ts";
 import {
   contacts,
   customers,
+  invoices,
   jobs,
   leadActivities,
   leads,
+  payments,
   sites,
   users,
 } from "../db/schema.ts";
@@ -174,30 +176,133 @@ leadRoutes.get("/lookup", requirePermission("lead:read"), async (c) => {
   const phone = e164(c.req.query("phone"));
   if (!phone) return c.json({ match: null });
 
+  /*
+    An open lead wins, and `convertedCustomerId is null` is what makes it open.
+    Without that clause a caller who became a customer last March still matched
+    as a lead, and the coordinator was told to "open the existing lead" for
+    somebody who has been on the books for months — the opposite of FR-102's
+    instruction, which is to raise a job for a customer and not run a sales
+    cycle at them.
+  */
+  const owner = alias(users, "lead_owner");
   const [openLead] = await db
-    .select({ id: leads.id, reference: leads.reference, name: leads.name, stage: leads.stage })
+    .select({
+      leadId: leads.id,
+      reference: leads.reference,
+      name: leads.name,
+      stage: leads.stage,
+      owner: owner.name,
+      nextFollowUpAt: leads.nextFollowUpAt,
+    })
     .from(leads)
-    .where(and(eq(leads.tenantId, tenantId), eq(leads.phoneE164, phone)))
+    .leftJoin(owner, eq(leads.ownerUserId, owner.id))
+    .where(
+      and(
+        eq(leads.tenantId, tenantId),
+        eq(leads.phoneE164, phone),
+        isNull(leads.convertedCustomerId),
+      ),
+    )
     .limit(1);
-  if (openLead) return c.json({ match: { kind: "lead", ...openLead } });
+
+  if (openLead) {
+    return c.json({
+      match: {
+        kind: "lead",
+        leadId: openLead.leadId,
+        reference: openLead.reference,
+        name: openLead.name,
+        stage: openLead.stage,
+        // Unassigned is a real state and the screen says so, rather than
+        // printing nothing and leaving the coordinator to guess who to ask.
+        owner: openLead.owner ?? "Unassigned",
+        nextFollowUp: openLead.nextFollowUpAt?.toISOString() ?? "",
+      },
+    });
+  }
 
   /*
-    A number already on a site contact is the more valuable hit: it means this
-    is a repeat customer, and the history is worth reading before ringing back.
+    Otherwise a number already on a site contact: a repeat customer, and the
+    history is worth reading before ringing back.
   */
   const [existing] = await db
-    .select({
-      id: customers.id,
-      name: customers.name,
-      siteLocality: sites.locality,
-    })
+    .select({ customerId: customers.id, name: customers.name })
     .from(contacts)
     .innerJoin(sites, eq(contacts.siteId, sites.id))
     .innerJoin(customers, eq(sites.customerId, customers.id))
     .where(and(eq(contacts.tenantId, tenantId), eq(contacts.phoneE164, phone)))
     .limit(1);
 
-  return c.json({ match: existing ? { kind: "customer", ...existing } : null });
+  if (!existing) return c.json({ match: null });
+
+  /*
+    The three facts §6.7.2 says decide the coordinator's next sentence: how well
+    this customer is known, whether somebody is already going, and whether they
+    owe us money. Counted here rather than fetched by the browser, because this
+    whole panel has a p95 budget of 250ms and has to appear while the customer
+    is still talking.
+  */
+  const [history] = await db
+    .select({
+      pastJobs: count(),
+      lastJobDate: sql<string | null>`max(${jobs.scheduledDate})`,
+    })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.tenantId, tenantId),
+        eq(jobs.customerId, existing.customerId),
+        inArray(jobs.status, ["WORK_DONE", "SIGNED_OFF"]),
+      ),
+    );
+
+  const [open] = await db
+    .select({ n: count() })
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.tenantId, tenantId),
+        eq(jobs.customerId, existing.customerId),
+        notInArray(jobs.status, ["WORK_DONE", "SIGNED_OFF", "CANCELLED"]),
+      ),
+    );
+
+  /*
+    Issued invoices less what has been paid against them. Drafts are excluded
+    deliberately — a draft is not a demand, and telling somebody they owe money
+    on a document never sent is how a coordinator ends up apologising.
+  */
+  const [ledger] = await db
+    .select({
+      billed: sql<string>`coalesce(sum(${invoices.grandTotalPaise}), 0)`,
+      paid: sql<string>`coalesce((
+        select sum(${payments.amountPaise}) from ${payments}
+        where ${payments.invoiceId} in (
+          select id from ${invoices}
+          where ${invoices.tenantId} = ${tenantId}
+            and ${invoices.customerId} = ${existing.customerId}
+            and ${invoices.status} = 'ISSUED')), 0)`,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.tenantId, tenantId),
+        eq(invoices.customerId, existing.customerId),
+        eq(invoices.status, "ISSUED"),
+      ),
+    );
+
+  return c.json({
+    match: {
+      kind: "customer",
+      customerId: existing.customerId,
+      name: existing.name,
+      pastJobs: Number(history?.pastJobs ?? 0),
+      lastJobDate: history?.lastJobDate ?? null,
+      openJobs: Number(open?.n ?? 0),
+      outstandingPaise: Number(ledger?.billed ?? 0) - Number(ledger?.paid ?? 0),
+    },
+  });
 });
 
 const newLead = z.object({

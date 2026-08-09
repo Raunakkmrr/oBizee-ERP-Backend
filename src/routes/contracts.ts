@@ -18,6 +18,7 @@ import { apiRouter } from "../lib/router.ts";
 import { formatNumber, nextInSeries } from "../lib/series.ts";
 import { VISITS_PER_YEAR, isoDay, visitSchedule, type Recurrence } from "../lib/visits.ts";
 import { audit } from "../lib/audit.ts";
+import { e164 } from "../lib/phone.ts";
 
 /**
  * Contracts — FR-501, FR-502, FR-505, FR-1406.
@@ -37,25 +38,112 @@ const RECURRENCES = [
   "QUARTERLY", "HALF_YEARLY", "ANNUAL",
 ] as const;
 
+/** Whole days between two dates, ignoring the time of day. */
+function daysBetween(from: Date, to: Date): number {
+  const day = 86_400_000;
+  return Math.round((Date.UTC(to.getFullYear(), to.getMonth(), to.getDate())
+    - Date.UTC(from.getFullYear(), from.getMonth(), from.getDate())) / day);
+}
+
+/**
+ * Every contract, in the shape the contracts screen reads.
+ *
+ * **This endpoint used to return database rows**, and the screen never called
+ * it — it answered `NO_API_IMPL:contracts.list` and rendered "not wired to the
+ * backend yet" while two active AMCs sat in the table. That is the gap between
+ * "the endpoint exists" and "the screen works", and it survived because the
+ * contract test covered nine composed reads and this was the tenth.
+ *
+ * Composed rather than raw for the usual reason: the screen needs the
+ * customer's name and the site's label, not two uuids, and it needs the term
+ * measured rather than the two dates to measure it from. Doing that here means
+ * one query rather than a fan-out from the browser.
+ */
 contractRoutes.get("/", requirePermission("contract:read"), async (c) => {
   const { tenantId } = c.get("caller");
   const rows = await db
-    .select()
+    .select({
+      id: contracts.id,
+      reference: contracts.reference,
+      customer: customers.name,
+      siteLabel: sites.label,
+      siteLocality: sites.locality,
+      annualValuePaise: contracts.annualValuePaise,
+      coverage: contracts.coverage,
+      billing: contracts.billing,
+      reschedulePolicy: contracts.reschedulePolicy,
+      startDate: contracts.startDate,
+      endDate: contracts.endDate,
+      status: contracts.status,
+    })
     .from(contracts)
-    .where(eq(contracts.tenantId, tenantId));
+    .innerJoin(customers, eq(contracts.customerId, customers.id))
+    .leftJoin(sites, eq(contracts.siteId, sites.id))
+    .where(eq(contracts.tenantId, tenantId))
+    .orderBy(desc(contracts.startDate));
 
-  const schedules = rows.length
+  const ids = rows.map((r) => r.id);
+  const schedules = ids.length
     ? await db
         .select()
         .from(contractSchedules)
-        .where(inArray(contractSchedules.contractId, rows.map((r) => r.id)))
+        .where(inArray(contractSchedules.contractId, ids))
     : [];
 
+  /*
+    Visits done are counted, never stored. A visit *is* a job — FR-502 — so the
+    only honest source is how many of those jobs actually finished. A stored
+    counter is a number that drifts the first time somebody cancels one.
+  */
+  const done = ids.length
+    ? await db
+        .select({ scheduleId: jobs.contractScheduleId, n: count() })
+        .from(jobs)
+        // Done means done on site. There is no `COMPLETED` status — a visit
+        // ends at WORK_DONE and, where the customer signs, SIGNED_OFF.
+        .where(and(eq(jobs.tenantId, tenantId), inArray(jobs.status, ["WORK_DONE", "SIGNED_OFF"])))
+        .groupBy(jobs.contractScheduleId)
+    : [];
+  const doneBySchedule = new Map(done.map((r) => [r.scheduleId, Number(r.n)]));
+
+  const today = new Date();
+
   return c.json({
-    contracts: rows.map((contract) => ({
-      ...contract,
-      schedules: schedules.filter((s) => s.contractId === contract.id),
-    })),
+    contracts: rows.map((contract) => {
+      const start = new Date(contract.startDate);
+      const end = new Date(contract.endDate);
+      return {
+        id: contract.id,
+        reference: contract.reference,
+        customer: contract.customer,
+        // A contract without a site is legal — an umbrella AMC across a group.
+        // The em dash says so rather than the screen printing "null".
+        site: contract.siteLabel
+          ? `${contract.siteLabel} · ${contract.siteLocality}`
+          : "—",
+        annualValuePaise: Number(contract.annualValuePaise),
+        coverage: contract.coverage,
+        billing: contract.billing,
+        startDate: contract.startDate,
+        endDate: contract.endDate,
+        termDays: Math.max(1, daysBetween(start, end)),
+        // Negative once expired, and the screen reads that: a contract three
+        // days past its end is a different conversation from one due next week.
+        daysRemaining: daysBetween(today, end),
+        status: contract.status,
+        reschedulePolicy: contract.reschedulePolicy,
+        schedules: schedules
+          .filter((s) => s.contractId === contract.id)
+          .map((s) => ({
+            id: s.id,
+            scope: s.scope,
+            recurrence: s.recurrence,
+            anchorDay: s.anchorDay,
+            visitsDone: doneBySchedule.get(s.id) ?? 0,
+            visitsCommitted: s.visitsCommitted,
+          })),
+      };
+    }),
   });
 });
 
@@ -336,7 +424,10 @@ contractRoutes.post("/:id/renewal-lead", requirePermission("lead:write"), async 
       tenantId: caller.tenantId,
       reference,
       name: contract.customer,
-      phoneE164: contact?.phone ?? null,
+      // Normalised, like every other write. A renewal lead whose number is
+      // stored raw cannot be found by the duplicate check that exists to stop
+      // somebody opening a second lead for the same customer.
+      phoneE164: e164(contact?.phone),
       locality: site?.locality ?? null,
       source: "AMC renewal",
       stage: "NEW",
