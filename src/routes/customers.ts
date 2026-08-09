@@ -14,6 +14,7 @@ import {
 } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
+import { e164 } from "../lib/phone.ts";
 import { audit } from "../lib/audit.ts";
 
 /**
@@ -176,6 +177,24 @@ const newCustomer = z.object({
     landmark: z.string().nullable().optional(),
     accessNotes: z.string().nullable().optional(),
   }),
+  /*
+    Who to ring at this site.
+
+    The form has always collected one and the register had nowhere to put it,
+    so it was posted and silently dropped — leaving every new customer with a
+    site nobody could be called about, which is the one thing the collections
+    list and the job card both need.
+  */
+  contact: z
+    .object({
+      name: z.string().trim().min(2),
+      phone: z.string().trim().min(1),
+      roleLabel: z
+        .enum(["OWNER", "SITE_INCHARGE", "TENANT", "SECURITY", "ACCOUNTS", "OTHER"])
+        .default("SITE_INCHARGE"),
+    })
+    .nullable()
+    .optional(),
 });
 
 customerRoutes.post(
@@ -215,11 +234,33 @@ customerRoutes.post(
       })
       .returning();
 
+    /*
+      The first contact is the primary one: "who do I ring" must have exactly
+      one answer, and the only sensible answer for a site with one contact is
+      that contact.
+    */
+    const contact = body.contact
+      ? (
+          await db
+            .insert(contacts)
+            .values({
+              tenantId: caller.tenantId,
+              siteId: site!.id,
+              name: body.contact.name,
+              phoneE164: e164(body.contact.phone) ?? body.contact.phone,
+              whatsappE164: e164(body.contact.phone),
+              roleLabel: body.contact.roleLabel,
+              isPrimary: true,
+            })
+            .returning()
+        )[0]
+      : null;
+
     await audit(caller, "ADD_CUSTOMER", `Added ${body.name} to the customer register`, {
       table: "customers",
       id: customer!.id,
     });
 
-    return c.json({ ...customer, sites: [site] }, 201);
+    return c.json({ ...customer, sites: [{ ...site, contacts: contact ? [contact] : [] }] }, 201);
   },
 );
