@@ -1,6 +1,6 @@
 import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import {
   branches, contracts, customers, invoiceLines, invoices, jobs, sites, tenants,
@@ -99,18 +99,42 @@ invoiceRoutes.get("/", requirePermission("invoice:read"), async (c) => {
 
 invoiceRoutes.get("/:id", requirePermission("invoice:read"), async (c) => {
   const { tenantId } = c.get("caller");
-  const [invoice] = await db
-    .select()
+  const [row] = await db
+    .select({
+      invoice: invoices,
+      customer: customers.name,
+      jobNumber: jobs.jobNumber,
+    })
     .from(invoices)
+    .innerJoin(customers, eq(invoices.customerId, customers.id))
+    .leftJoin(jobs, eq(invoices.jobId, jobs.id))
     .where(and(eq(invoices.id, c.req.param("id")), eq(invoices.tenantId, tenantId)))
     .limit(1);
-  if (!invoice) return c.json({ error: "No such invoice" }, 404);
+  if (!row) return c.json({ error: "No such invoice" }, 404);
 
   const lines = await db
     .select()
     .from(invoiceLines)
-    .where(eq(invoiceLines.invoiceId, invoice.id));
-  return c.json({ ...invoice, lines });
+    .where(eq(invoiceLines.invoiceId, row.invoice.id))
+    .orderBy(asc(invoiceLines.position));
+
+  return c.json({
+    ...row.invoice,
+    customer: row.customer,
+    // The job this settles, by the number a person reads (FR-210).
+    jobNumber: row.jobNumber,
+    /*
+      `12 Jun 2026`. Formatted here rather than on the screen because the same
+      document is printed, exported and read aloud, and three places formatting
+      one date is three chances to disagree about it.
+    */
+    dateWord: new Date(`${row.invoice.issueDate}T00:00:00`).toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    }),
+    lines,
+  });
 });
 
 const createInvoice = z
