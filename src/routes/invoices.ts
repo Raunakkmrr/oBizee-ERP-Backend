@@ -1,6 +1,6 @@
 import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, count, eq } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import {
   branches, contracts, customers, invoiceLines, invoices, jobs, sites, tenants,
@@ -90,11 +90,48 @@ const lineInput = z.object({
 
 invoiceRoutes.get("/", requirePermission("invoice:read"), async (c) => {
   const { tenantId } = c.get("caller");
+  /*
+    The register, with the customer's name on each row.
+
+    Screens read this to answer "what has already been billed" and to build the
+    Tally envelope, and both need the name — joining it here rather than
+    shipping the customer list alongside and matching in the browser.
+  */
   const rows = await db
-    .select()
+    .select({ invoice: invoices, customer: customers.name })
     .from(invoices)
-    .where(eq(invoices.tenantId, tenantId));
-  return c.json({ invoices: rows });
+    .innerJoin(customers, eq(invoices.customerId, customers.id))
+    .where(eq(invoices.tenantId, tenantId))
+    .orderBy(asc(invoices.issueDate), asc(invoices.number));
+
+  /*
+    Lines travel with the register.
+
+    The GST workspace builds the Tally and Zoho envelopes from these, and both
+    are per-line documents. Fetching them one invoice at a time would be a
+    request per row on the one screen that reads every row.
+  */
+  const lines = rows.length
+    ? await db
+        .select()
+        .from(invoiceLines)
+        .where(eq(invoiceLines.tenantId, tenantId))
+        .orderBy(asc(invoiceLines.position))
+    : [];
+  const linesFor = new Map<string, typeof lines>();
+  for (const line of lines) {
+    const bucket = linesFor.get(line.invoiceId) ?? [];
+    bucket.push(line);
+    linesFor.set(line.invoiceId, bucket);
+  }
+
+  return c.json({
+    invoices: rows.map(({ invoice, customer }) => ({
+      ...invoice,
+      customer,
+      lines: linesFor.get(invoice.id) ?? [],
+    })),
+  });
 });
 
 invoiceRoutes.get("/:id", requirePermission("invoice:read"), async (c) => {
@@ -290,3 +327,58 @@ invoiceRoutes.post(
     return c.json({ ...invoice, lines, supplyAdvice: adviseSupply(lines) }, 201);
   },
 );
+
+/**
+ * Issue a draft — FR-806.
+ *
+ * Nothing did this. `invoice:finalise` was granted to roles and used by no
+ * route, `POST /` created a `DRAFT`, and no code path ever set `ISSUED`. So an
+ * invoice raised through the product stayed a draft for ever: absent from
+ * receivables, absent from GSTR-1, and never actually billed to anybody. The
+ * GST period reported it as "still a draft" and refused to export, which is
+ * the only place the problem surfaced at all.
+ *
+ * **The number was allocated when the draft was created**, not here. That is
+ * recorded as an open question rather than quietly relied on: two drafts
+ * raised in one order and issued in another give a series whose dates run
+ * backwards against its numbers, which is the §31 question nobody wants at an
+ * assessment. Issuing therefore leaves `issueDate` alone — the date the number
+ * belongs to — rather than stamping today onto a number drawn last week.
+ */
+invoiceRoutes.post("/:id/issue", requirePermission("invoice:finalise"), async (c) => {
+  const caller = c.get("caller");
+  const id = c.req.param("id");
+
+  const [invoice] = await db
+    .select({ id: invoices.id, number: invoices.number, status: invoices.status })
+    .from(invoices)
+    .where(and(eq(invoices.id, id), eq(invoices.tenantId, caller.tenantId)))
+    .limit(1);
+  if (!invoice) return c.json({ error: "No such invoice" }, 404);
+
+  // Issuing twice is not idempotent housekeeping; it is a second document.
+  if (invoice.status === "ISSUED") {
+    return c.json({ error: `${invoice.number} has already been issued.` }, 409);
+  }
+
+  const [lines] = await db
+    .select({ value: count() })
+    .from(invoiceLines)
+    .where(eq(invoiceLines.invoiceId, id));
+  if (Number(lines?.value ?? 0) === 0) {
+    return c.json({ error: "An invoice with no lines bills nothing." }, 409);
+  }
+
+  const [updated] = await db
+    .update(invoices)
+    .set({ status: "ISSUED" })
+    .where(and(eq(invoices.id, id), eq(invoices.status, "DRAFT")))
+    .returning({ id: invoices.id, number: invoices.number, status: invoices.status });
+
+  await audit(caller, "ISSUE_INVOICE", `Issued ${invoice.number}`, {
+    table: "invoices",
+    id,
+  });
+
+  return c.json(updated);
+});
