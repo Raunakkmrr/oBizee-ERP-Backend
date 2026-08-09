@@ -24,7 +24,7 @@ import { and, eq, inArray, like, or } from "drizzle-orm";
 
 import { db } from "./client.ts";
 import { formatNumber, nextInSeries } from "../lib/series.ts";
-import { customers, jobEvents, jobParts, jobs, leads, sites, tenants, users } from "./schema.ts";
+import { customers, invoices, jobEvents, jobParts, jobs, leads, sites, tenants, users } from "./schema.ts";
 
 const LEGAL_NAME = "Shakti Cooling Systems Pvt Ltd";
 
@@ -114,11 +114,31 @@ export async function seedDay(): Promise<void> {
         ),
       ),
     );
-  if (stale.length > 0) {
+  /*
+    A job that has been invoiced is not the fixture's to remove.
+
+    The foreign key refuses it, and rightly: an invoice pointing at nothing is
+    a bill nobody can trace to the work. So the day is rebuilt around whatever
+    has already been billed rather than on top of it — which also means a run
+    of the E2E suite does not make the next one fail.
+  */
+  const billed = new Set(
+    (
+      await db
+        .select({ jobId: invoices.jobId })
+        .from(invoices)
+        .where(eq(invoices.tenantId, tenantId))
+    )
+      .map((row) => row.jobId)
+      .filter((id): id is string => id !== null),
+  );
+
+  const removable = stale.filter((job) => !billed.has(job.id));
+  if (removable.length > 0) {
     await db.delete(jobs).where(
       inArray(
         jobs.id,
-        stale.map((j) => j.id),
+        removable.map((j) => j.id),
       ),
     );
   }

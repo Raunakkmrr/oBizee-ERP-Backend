@@ -39,8 +39,16 @@ export const LIMITS = {
   passwordPerAccount: { max: 5, windowSeconds: 15 * 60 },
   passwordPerIp: { max: 20, windowSeconds: 15 * 60 },
 
-  /** Every request counts: each one is an SMS whether or not anyone wanted it. */
-  otpRequestPerPhone: { max: 3, windowSeconds: 60 * 60 },
+  /*
+    Every request counts: each one is an SMS whether or not anyone wanted it.
+
+    Five rather than three. Three covers "it did not arrive, send it again"
+    exactly twice, and a technician standing outside a plant at seven in the
+    morning on a patchy network gets there faster than an attacker does — at
+    which point the limit is costing the firm a job rather than saving it an
+    SMS. Five still makes bombing somebody's phone pointless.
+  */
+  otpRequestPerPhone: { max: 5, windowSeconds: 60 * 60 },
   otpRequestPerIp: { max: 10, windowSeconds: 60 * 60 },
 
   otpVerifyPerPhone: { max: 10, windowSeconds: 15 * 60 },
