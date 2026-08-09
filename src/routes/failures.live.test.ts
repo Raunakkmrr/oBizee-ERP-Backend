@@ -47,6 +47,7 @@ const READS = [
   "/api/vendors/bills",
   "/api/advances",
   "/api/payments/receivables",
+  "/api/people",
 ];
 
 /** Every write. The body is deliberately empty — this is about refusing. */
@@ -61,6 +62,7 @@ const WRITES = [
   "/api/vendors/bills",
   "/api/contracts",
   "/api/vendors/advise",
+  "/api/people",
 ];
 
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
@@ -233,6 +235,80 @@ describe.skipIf(!reachable)("how the API refuses", () => {
       body: JSON.stringify({ invoiceId: theirs.id }),
     });
     expect(res.status).toBe(409);
+  });
+
+  describe("the team", () => {
+    /*
+      The one screen where a mistake locks people out of the product rather
+      than producing a wrong number. Every assertion here is a lockout that
+      would need us to reach into the database to undo.
+    */
+    async function ownerAuth() {
+      return auth;
+    }
+
+    it("is owner only", async () => {
+      const res = await fetch(`${BASE}/auth/password`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "priya@shakticooling.test", password: "obizee-dev-2026" }),
+      });
+      const { accessToken } = (await res.json()) as { accessToken: string };
+      const asCoordinator = { Authorization: `Bearer ${accessToken}`, "content-type": "application/json" };
+
+      // A coordinator who could add a user could add themselves an owner.
+      expect((await fetch(`${BASE}/api/people`, { headers: asCoordinator })).status).toBe(403);
+      expect(
+        (
+          await fetch(`${BASE}/api/people`, {
+            method: "POST",
+            headers: asCoordinator,
+            body: JSON.stringify({ name: "Sneaky Owner", role: "owner", email: "x@y.test" }),
+          })
+        ).status,
+      ).toBe(403);
+    });
+
+    it("refuses a person who could never sign in", async () => {
+      const res = await fetch(`${BASE}/api/people`, {
+        method: "POST",
+        headers: await ownerAuth(),
+        body: JSON.stringify({ name: "No Way In", role: "technician" }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("refuses to let an owner deactivate themselves", async () => {
+      const headers = await ownerAuth();
+      const { people } = (await (await fetch(`${BASE}/api/people`, { headers })).json()) as {
+        people: { id: string; email: string | null }[];
+      };
+      const me = people.find((p) => p.email === "manish@shakticooling.test")!;
+
+      const res = await fetch(`${BASE}/api/people/${me.id}/active`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ active: false }),
+      });
+      expect(res.status).toBe(409);
+    });
+
+    it("refuses to demote the last owner", async () => {
+      const headers = await ownerAuth();
+      const { people } = (await (await fetch(`${BASE}/api/people`, { headers })).json()) as {
+        people: { id: string; role: string; active: boolean; email: string | null }[];
+      };
+      const owners = people.filter((p) => p.role === "owner" && p.active);
+      // Only meaningful while the seeded tenant has exactly one.
+      if (owners.length !== 1) return;
+
+      const res = await fetch(`${BASE}/api/people/${owners[0]!.id}`, {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({ role: "coordinator" }),
+      });
+      expect(res.status).toBe(409);
+    });
   });
 
   describe("sign-in", () => {
