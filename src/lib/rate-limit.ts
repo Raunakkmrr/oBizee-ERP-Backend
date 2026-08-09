@@ -108,6 +108,19 @@ export async function clear(key: string): Promise<void> {
 }
 
 /**
+ * Hand back the single hit an attempt spent, because it was not a failure.
+ *
+ * Used on the per-IP key, which cannot be cleared outright: an office behind
+ * one NAT address must not lock itself out by working, and an attacker holding
+ * one valid credential must not be able to wipe the counter between guesses at
+ * everybody else's. A refund satisfies both — failures still accumulate,
+ * successes cost nothing.
+ */
+export async function refund(key: string): Promise<void> {
+  await db.execute(sql`select refund_rate_limit(${key})`);
+}
+
+/**
  * Check every key, and report the longest wait among those that failed.
  *
  * All of them are consumed even when the first refuses — an attacker must not

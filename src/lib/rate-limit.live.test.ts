@@ -12,7 +12,7 @@ import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import { adminDb as db } from "../db/client.ts";
-import { callerIp } from "./rate-limit.ts";
+import { callerIp, refund } from "./rate-limit.ts";
 
 const live = Boolean(process.env.DATABASE_URL);
 
@@ -84,6 +84,38 @@ describe.skipIf(!live)("consume_rate_limit", () => {
 
     // Exhausting one account's budget must not touch anybody else's.
     expect((await consumeRaw(b, 1)).allowed).toBe(true);
+  });
+
+  it("gives a hit back, so an office does not lock itself out by working", async () => {
+    /*
+      The case this is about: a dozen people behind one NAT address, all
+      signing in successfully on a Monday morning. Each spends a hit on the
+      shared address budget, and before the refund the twenty-first person —
+      and everybody after — was refused by a limiter counting attacks that had
+      not happened.
+
+      Spends the whole budget, refunds one, and asserts exactly one more gets
+      through. A refund that cleared the key instead would let far more.
+    */
+    const key = freshKey("refund");
+    const budget = 3;
+
+    // Twelve people, one address, every one of them getting in. Before the
+    // refund the fourth was refused and so was everybody after.
+    for (let person = 1; person <= 12; person += 1) {
+      expect(
+        (await consumeRaw(key, budget)).allowed,
+        `person ${person} was locked out by colleagues who had signed in successfully`,
+      ).toBe(true);
+      await refund(key);
+    }
+
+    /*
+      And the budget still bites when the attempts are failures — which is the
+      half a plain `clear` would have thrown away.
+    */
+    for (let i = 0; i < budget; i += 1) expect((await consumeRaw(key, budget)).allowed).toBe(true);
+    expect((await consumeRaw(key, budget)).allowed, "failures no longer count").toBe(false);
   });
 
   it("forgets a key when told to", async () => {

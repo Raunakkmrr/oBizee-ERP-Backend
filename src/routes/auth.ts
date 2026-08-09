@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { zBody } from "../lib/validate.ts";
 import { apiRouter } from "../lib/router.ts";
 import { revokeRefreshToken } from "../auth/sign-in.ts";
-import { callerIp, clear, consumeAll, LIMITS, tooMany } from "../lib/rate-limit.ts";
+import { callerIp, clear, consumeAll, LIMITS, refund, tooMany } from "../lib/rate-limit.ts";
 import { z } from "zod";
 import { e164 } from "../lib/phone.ts";
 import { otpSenderFrom } from "../auth/otp-sender.ts";
@@ -103,6 +103,17 @@ authRoutes.post(
 
     const result = await verifyOtp(normalised, code);
     if (result.kind === "refused") return c.json({ error: result.reason }, 401);
+
+    /*
+      Same rule as the password door: a code that worked was not an attempt at
+      guessing. Technicians share a site's connection far more often than office
+      staff share the office's, so the address budget here matters more, not
+      less.
+    */
+    await Promise.all([
+      clear(`otp:verify:phone:${normalised}`),
+      refund(`otp:verify:ip:${callerIp(c)}`),
+    ]);
     setRefreshCookie(c, result.refreshToken);
     return c.json({
       accessToken: result.accessToken,
@@ -131,12 +142,20 @@ authRoutes.post(
     if (result.kind === "refused") return c.json({ error: result.reason }, 401);
 
     /*
-      Getting in clears the account's failures. Only failures should
-      accumulate — otherwise a coordinator who signs in from the shop floor
-      several times a day locks herself out by working, and the limiter
-      punishes use rather than attack.
+      Getting in clears the account's failures and refunds the address's.
+
+      Only failures should accumulate — otherwise a coordinator who signs in
+      from the shop floor several times a day locks herself out by working, and
+      the limiter punishes use rather than attack. That was written about the
+      account key and true only of it: the per-IP key was consumed by every
+      attempt and never given back, so a dozen people sharing one office
+      connection locked the building out by arriving on a Monday.
+
+      Refunded rather than cleared. See `0012_rate_limit_refund.sql` — clearing
+      would let one valid credential wipe the counter between guesses at other
+      accounts, which is most of what the address key exists to stop.
     */
-    await clear(accountKey);
+    await Promise.all([clear(accountKey), refund(`pw:ip:${ip}`)]);
     /*
       The refresh token goes into an httpOnly cookie and, unless a native
       client asked for it, nowhere else. Handing it back in the body is what
