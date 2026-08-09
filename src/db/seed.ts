@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { db } from "./client.ts";
+import { adminDb as db } from "./client.ts";
 import {
   assets,
   branches,

@@ -19,7 +19,7 @@ import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { hashPassword } from "../auth/password.ts";
-import { db } from "../db/client.ts";
+import { adminDb as db } from "../db/client.ts";
 import { branches, customers, sites, tenants, users } from "../db/schema.ts";
 
 const BASE = process.env.API_URL ?? "http://localhost:8787";

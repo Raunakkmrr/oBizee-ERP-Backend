@@ -1,6 +1,6 @@
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { db } from "../db/client.ts";
+import { adminDb as db } from "../db/client.ts";
 import { otpChallenges, refreshTokens, users } from "../db/schema.ts";
 import { issueAccessToken, type Caller } from "./context.ts";
 import { hashPassword, verifyPassword } from "./password.ts";

@@ -22,7 +22,7 @@
 import { sql } from "drizzle-orm";
 import type { Context } from "hono";
 
-import { db } from "../db/client.ts";
+import { adminDb as db } from "../db/client.ts";
 
 export type Limit = { max: number; windowSeconds: number };
 

@@ -22,7 +22,7 @@
 import { sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { db } from "../db/client.ts";
+import { adminDb as db } from "../db/client.ts";
 
 const BASE = process.env.API_URL ?? "http://localhost:8787";
 

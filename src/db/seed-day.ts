@@ -22,7 +22,7 @@
  */
 import { and, eq, inArray, like, or } from "drizzle-orm";
 
-import { db } from "./client.ts";
+import { adminDb as db, withTenant } from "./client.ts";
 import { formatNumber, nextInSeries } from "../lib/series.ts";
 import { customers, invoices, jobEvents, jobParts, jobs, leads, sites, tenants, users } from "./schema.ts";
 
@@ -51,6 +51,15 @@ export async function seedDay(): Promise<void> {
     .limit(1);
   if (!tenant) throw new Error("run the master seed first — no tenant found");
   const tenantId = tenant.id;
+
+  /*
+    The series counters are drawn through the request-path handle, which is
+    scoped by the database and therefore needs a tenant in force. Everything
+    else this fixture does runs on the privileged handle, because it is setting
+    the tenant up rather than acting inside one.
+  */
+  const nextJobSerial = (branch: string) =>
+    withTenant(tenantId, async () => await nextInSeries(tenantId, branch, "job", new Date()));
 
   const [branchRow] = await db
     .select({ id: jobs.branchId })
@@ -225,7 +234,7 @@ export async function seedDay(): Promise<void> {
       formatNumber(
         "job",
         "J",
-        await nextInSeries(tenantId, branchId, "job", new Date()),
+        await nextJobSerial(branchId),
         new Date(),
       ),
     ),
@@ -271,7 +280,7 @@ export async function seedDay(): Promise<void> {
     {
       tenantId,
       branchId,
-      jobNumber: formatNumber("job", "J", await nextInSeries(tenantId, branchId, "job", new Date()), new Date()),
+      jobNumber: formatNumber("job", "J", await nextJobSerial(branchId), new Date()),
       customerId: at("Shakti").customerId,
       siteId: at("Shakti").siteId,
       serviceType: "Chiller AMC",
@@ -283,7 +292,7 @@ export async function seedDay(): Promise<void> {
     {
       tenantId,
       branchId,
-      jobNumber: formatNumber("job", "J", await nextInSeries(tenantId, branchId, "job", new Date()), new Date()),
+      jobNumber: formatNumber("job", "J", await nextJobSerial(branchId), new Date()),
       customerId: at("Green Park").customerId,
       siteId: at("Green Park").siteId,
       serviceType: "AC service",

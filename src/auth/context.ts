@@ -1,5 +1,7 @@
 import type { Context, MiddlewareHandler, Next } from "hono";
 import { jwtVerify, SignJWT } from "jose";
+
+import { withTenant } from "../db/client.ts";
 import { can, type Permission, type Role } from "./roles.ts";
 
 /**
@@ -119,7 +121,14 @@ export const requireCaller: MiddlewareHandler<AppEnv> = async (c, next) => {
     );
   }
 
-  await next();
+  /*
+    From here down, every statement `db` sends carries this tenant to the
+    database, where the policies in migration 0010 do the filtering. The comment
+    at the top of this file used to promise that "every query is scoped to that
+    caller's tenant" and rely on four hundred handlers keeping the promise. This
+    is the line that keeps it.
+  */
+  return withTenant(caller.tenantId, () => next());
 };
 
 /**

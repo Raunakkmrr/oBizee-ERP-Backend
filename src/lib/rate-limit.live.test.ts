@@ -11,7 +11,7 @@
 import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
-import { db } from "../db/client.ts";
+import { adminDb as db } from "../db/client.ts";
 import { callerIp } from "./rate-limit.ts";
 
 const live = Boolean(process.env.DATABASE_URL);
