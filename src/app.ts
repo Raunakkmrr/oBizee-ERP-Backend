@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { authRoutes } from "./routes/auth.ts";
 import { customerRoutes } from "./routes/customers.ts";
 import { moneyRoutes } from "./routes/money.ts";
@@ -30,6 +31,43 @@ import { handleError } from "./lib/errors.ts";
  * forgetting to add a guard should fail closed, not open.
  */
 export const app = new Hono<AppEnv>();
+
+/**
+ * Which origins a browser may call this from.
+ *
+ * **There was none of this at all**, which meant the web app could not reach
+ * the API from a browser — every request failed at the preflight. Nothing
+ * caught it: the contract tests run in Node, every probe was `curl` or
+ * `fetch` from a script, and none of those are subject to the same-origin
+ * policy. The first Playwright run found it in a minute.
+ *
+ * An allow-list, not `*`. The API answers with a caller's own data on the
+ * strength of a bearer token, and while `*` cannot leak that on its own, an
+ * explicit list is the thing that stays correct when a cookie or a second
+ * front end arrives.
+ */
+const ALLOWED_ORIGINS = (
+  process.env.WEB_ORIGINS ?? "http://localhost:3000,http://localhost:3100"
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(
+  "*",
+  cors({
+    origin: (origin) => (ALLOWED_ORIGINS.includes(origin) ? origin : null),
+    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: ["Content-Type", "Authorization"],
+    /*
+      The web app reads `Retry-After` off a 429 to say how long the wait is.
+      A browser hides every response header that is not on this list, so
+      without it the sentence would have to guess.
+    */
+    exposeHeaders: ["Retry-After"],
+    maxAge: 600,
+  }),
+);
 
 app.get("/health", (c) => c.json({ ok: true }));
 app.route("/auth", authRoutes);
