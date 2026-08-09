@@ -188,7 +188,20 @@ const newCustomer = z.object({
   contact: z
     .object({
       name: z.string().trim().min(2),
-      phone: z.string().trim().min(1),
+      /*
+        Refused at the door rather than stored as typed. A number this cannot
+        normalise is one FR-102's duplicate check can never match, so storing
+        it puts a customer on file and makes them invisible — and the message
+        here is the same one the sign-in route gives, because it is the same
+        fact about the same number.
+      */
+      phone: z
+        .string()
+        .trim()
+        .min(1)
+        .refine((value) => e164(value) !== null, {
+          message: "That is not a phone number this system can dial",
+        }),
       roleLabel: z
         .enum(["OWNER", "SITE_INCHARGE", "TENANT", "SECURITY", "ACCOUNTS", "OTHER"])
         .default("SITE_INCHARGE"),
@@ -247,7 +260,13 @@ customerRoutes.post(
               tenantId: caller.tenantId,
               siteId: site!.id,
               name: body.contact.name,
-              phoneE164: e164(body.contact.phone) ?? body.contact.phone,
+              /*
+                Normalised or refused — never the raw input. Falling back to
+                what was typed stored a number FR-102's duplicate check can
+                never match, so the customer was on file and invisible, and
+                nothing anywhere said so. The database now refuses it too.
+              */
+              phoneE164: e164(body.contact.phone) ?? "",
               whatsappE164: e164(body.contact.phone),
               roleLabel: body.contact.roleLabel,
               isPrimary: true,

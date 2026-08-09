@@ -65,6 +65,22 @@ const BY_CONSTRAINT: Record<string, { status: 409 | 400; message: string }> = {
     status: 409,
     message: "Somebody here already uses that email address.",
   },
+  contacts_phone_is_digits: {
+    status: 400,
+    message: "That is not a phone number this system can dial.",
+  },
+  contacts_whatsapp_is_digits: {
+    status: 400,
+    message: "That is not a WhatsApp number this system can reach.",
+  },
+  leads_phone_is_digits: {
+    status: 400,
+    message: "That is not a phone number this system can dial.",
+  },
+  users_phone_is_digits: {
+    status: 400,
+    message: "That is not a phone number this system can dial.",
+  },
   invoices_foots_exactly: {
     status: 400,
     message:
