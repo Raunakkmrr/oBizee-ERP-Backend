@@ -5,6 +5,7 @@ import { moneyRoutes } from "./routes/money.ts";
 import { jobDetailRoutes } from "./routes/job-detail.ts";
 import { reportRoutes } from "./routes/reports.ts";
 import { peopleRoutes } from "./routes/people.ts";
+import { changeOwnPassword } from "./auth/sign-in.ts";
 import { homeRoutes } from "./routes/home.ts";
 import { boardRoutes } from "./routes/board.ts";
 import { jobRoutes } from "./routes/jobs.ts";
@@ -61,6 +62,32 @@ app.route("/api/gst", gstRoutes);
  * change your own role, and it can only know which person that is by
  * comparing ids.
  */
+/**
+ * Choose your own password.
+ *
+ * Under `/api/me` and therefore behind `requireCaller`, which is what lets it
+ * be the single exception to the must-change gate: a caller in that state can
+ * reach this and nothing else.
+ */
+app.post("/api/me/password", async (c) => {
+  const caller = c.get("caller");
+  const body = await c.req.json<{ currentPassword?: string; newPassword?: string }>();
+
+  // Ten characters, and no other rule. Composition requirements produce
+  // Password@1, which is worse than a long thing somebody can remember.
+  if (!body.newPassword || body.newPassword.length < 10) {
+    return c.json({ error: "A password needs at least ten characters.", field: "newPassword" }, 400);
+  }
+  if (!body.currentPassword) {
+    return c.json({ error: "Enter the password you were given.", field: "currentPassword" }, 400);
+  }
+
+  const result = await changeOwnPassword(caller.userId, body.currentPassword, body.newPassword);
+  if (result.kind === "refused") return c.json({ error: result.reason }, 401);
+
+  return c.json({ accessToken: result.accessToken, refreshToken: result.refreshToken });
+});
+
 app.get("/api/me", (c) => {
   const caller = c.get("caller");
   return c.json({
@@ -69,6 +96,8 @@ app.get("/api/me", (c) => {
     role: caller.role,
     level: caller.level,
     tenantId: caller.tenantId,
+    // The app routes on this: everything else is refused until it is false.
+    mustChangePassword: caller.mustChangePassword ?? false,
   });
 });
 

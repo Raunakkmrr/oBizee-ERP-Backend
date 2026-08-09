@@ -105,6 +105,15 @@ export const users = pgTable(
     phoneE164: text("phone_e164"),
     email: text("email"),
     passwordHash: text("password_hash"),
+    /**
+     * Set when an owner chose this password, not the person using it.
+     *
+     * A password somebody else typed is a shared secret until it is replaced,
+     * so the holder is made to replace it before they can do anything else.
+     * The flag rides in the access token, and the change endpoint issues fresh
+     * tokens without it — so enforcing this costs no per-request database read.
+     */
+    mustChangePassword: boolean("must_change_password").notNull().default(false),
     role: e.roleEnum("role").notNull(),
     /** FR-1301: a level grants extra permissions within a role. */
     level: text("level"),

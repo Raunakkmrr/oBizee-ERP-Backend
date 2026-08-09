@@ -142,6 +142,12 @@ async function issueFor(userId: string): Promise<SignInResult> {
     role: user.role,
     level: user.level,
     name: user.name,
+    /*
+      Read fresh from the row on every issue, including on refresh — so
+      choosing a password lifts the restriction on the very next token, and
+      an owner setting a new one for somebody reimposes it just as fast.
+    */
+    mustChangePassword: user.mustChangePassword,
   };
 
   const refresh = randomBytes(32).toString("base64url");
@@ -194,3 +200,81 @@ export async function rotateRefresh(token: string): Promise<SignInResult> {
 }
 
 export { hashPassword } from "./password.ts";
+
+/**
+ * Choose your own password, replacing one an owner set.
+ *
+ * Returns fresh tokens. The restriction rides in the access token, so without
+ * new ones the caller would still be locked out of everything by the token
+ * they are holding — having just done the thing that was asked of them.
+ *
+ * The current password is required even though the caller is authenticated: a
+ * borrowed unlocked laptop should not be enough to take an account over.
+ */
+export async function changeOwnPassword(
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+): Promise<SignInResult> {
+  const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  if (!user?.passwordHash || !user.active) {
+    return { kind: "refused", reason: "That account cannot sign in" };
+  }
+  if (!(await verifyPassword(user.passwordHash, currentPassword))) {
+    return { kind: "refused", reason: "That is not your current password" };
+  }
+  if (await verifyPassword(user.passwordHash, newPassword)) {
+    return {
+      kind: "refused",
+      reason: "Choose a password different from the one you were given",
+    };
+  }
+
+  await db
+    .update(users)
+    .set({ passwordHash: await hashPassword(newPassword), mustChangePassword: false })
+    .where(eq(users.id, userId));
+
+  /*
+    Every other session ends. If the password was shared — and one an owner
+    typed has been, by definition — whoever else had it is signed out by the
+    act of replacing it.
+  */
+  await revokeAllForUser(user.tenantId, userId);
+
+  return issueFor(userId);
+}
+
+/**
+ * End a session, or all of them.
+ *
+ * Signing out used to be a browser-side gesture: the tab forgot its tokens and
+ * the refresh token stayed valid for thirty days. On a shared machine that is
+ * not signing out, it is closing the door and leaving the key in it.
+ */
+export async function revokeRefreshToken(token: string): Promise<void> {
+  await db
+    .update(refreshTokens)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(refreshTokens.tokenHash, hashCode(token)), isNull(refreshTokens.revokedAt)));
+}
+
+/**
+ * Every refresh token this person holds.
+ *
+ * Used when access is withdrawn rather than handed back — deactivation, and a
+ * password change. Their access token still works until it expires, fifteen
+ * minutes at most, and then there is nothing left to renew it with.
+ */
+export async function revokeAllForUser(tenantId: string, userId: string): Promise<void> {
+  await db
+    .update(refreshTokens)
+    .set({ revokedAt: new Date() })
+    .where(
+      and(
+        eq(refreshTokens.tenantId, tenantId),
+        eq(refreshTokens.userId, userId),
+        isNull(refreshTokens.revokedAt),
+      ),
+    );
+}

@@ -311,6 +311,81 @@ describe.skipIf(!reachable)("how the API refuses", () => {
     });
   });
 
+  describe("access, granted and withdrawn", () => {
+    const J = { "content-type": "application/json" };
+    const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
+      fetch(`${BASE}${path}`, { method: "POST", headers: { ...J, ...headers }, body: JSON.stringify(body) });
+
+    it("lets an owner-created office user sign in, and makes them replace the password", async () => {
+      /*
+        This route used to store no password and a comment claimed the person
+        would set one "via the reset flow" — a flow that did not exist. Every
+        office user added through the product was created unable to sign in,
+        and nothing said so.
+      */
+      const stamp = `${process.pid}${Math.floor(performance.now())}`;
+      const email = `probe${stamp}@shakticooling.test`;
+      const given = "handed-over-2026";
+
+      await post("/api/people", { name: `Probe ${stamp}`, role: "accountant", email, initialPassword: given }, auth);
+
+      const first = (await (await post("/auth/password", { email, password: given })).json()) as {
+        accessToken: string;
+      };
+      expect(first.accessToken, "a new office user cannot sign in").toBeTruthy();
+
+      const asThem = { Authorization: `Bearer ${first.accessToken}` };
+
+      // Enforced by the API, not by a screen that a client could walk past.
+      expect((await fetch(`${BASE}/api/customers`, { headers: asThem })).status).toBe(403);
+
+      expect((await post("/api/me/password", { currentPassword: given, newPassword: "short" }, asThem)).status).toBe(400);
+      expect((await post("/api/me/password", { currentPassword: "not-the-one", newPassword: "a-long-enough-one" }, asThem)).status).toBe(401);
+
+      const changed = (await (
+        await post("/api/me/password", { currentPassword: given, newPassword: "chosen-by-me-2026" }, asThem)
+      ).json()) as { accessToken: string };
+
+      // Fresh tokens, or they stay locked out having just complied.
+      expect((await fetch(`${BASE}/api/customers`, { headers: { Authorization: `Bearer ${changed.accessToken}` } })).status).toBe(200);
+      expect((await post("/auth/password", { email, password: given })).status).toBe(401);
+    });
+
+    it("revokes the refresh token on sign-out", async () => {
+      const session = (await (
+        await post("/auth/password", { email: "suresh@shakticooling.test", password: "obizee-dev-2026" })
+      ).json()) as { refreshToken: string };
+
+      expect((await post("/auth/sign-out", { refreshToken: session.refreshToken })).status).toBe(200);
+      // Signing out used to leave the token valid for thirty days.
+      expect((await post("/auth/refresh", { refreshToken: session.refreshToken })).status).toBe(401);
+    });
+
+    it("revokes everything when somebody is deactivated", async () => {
+      /*
+        Deactivation used to flip a boolean only the sign-in path read, so
+        anybody already signed in kept working and could refresh forever. The
+        button removed access from nobody who was using the product.
+      */
+      const stamp = `${process.pid}${Math.floor(performance.now())}`;
+      const email = `leaver${stamp}@shakticooling.test`;
+      const given = "temporary-pass-2026";
+
+      const person = (await (
+        await post("/api/people", { name: `Leaver ${stamp}`, role: "accountant", email, initialPassword: given }, auth)
+      ).json()) as { id: string };
+
+      const session = (await (await post("/auth/password", { email, password: given })).json()) as {
+        refreshToken: string;
+      };
+
+      await post(`/api/people/${person.id}/active`, { active: false }, auth);
+
+      expect((await post("/auth/refresh", { refreshToken: session.refreshToken })).status).toBe(401);
+      expect((await post("/auth/password", { email, password: given })).status).toBe(401);
+    });
+  });
+
   describe("sign-in", () => {
     const post = (path: string, body: unknown) =>
       fetch(`${BASE}${path}`, {

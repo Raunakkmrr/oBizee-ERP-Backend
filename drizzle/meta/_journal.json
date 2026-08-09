@@ -43,6 +43,13 @@
       "when": 1786101656572,
       "tag": "0005_past_speedball",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786265217547,
+      "tag": "0007_must_change_password",
+      "breakpoints": true
     }
   ]
 }

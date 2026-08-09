@@ -20,6 +20,8 @@ export type Caller = {
   /** FR-1301: a level grants extra permissions within a role. */
   level: string | null;
   name: string;
+  /** True while the password in use was chosen by somebody else. */
+  mustChangePassword?: boolean;
 };
 
 export type AppEnv = { Variables: { caller: Caller } };
@@ -48,6 +50,8 @@ export async function issueAccessToken(caller: Caller): Promise<string> {
     role: caller.role,
     level: caller.level,
     name: caller.name,
+    // Rides in the token so the gate below costs no database read.
+    mustChangePassword: caller.mustChangePassword ?? false,
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(caller.userId)
@@ -82,11 +86,37 @@ export const requireCaller: MiddlewareHandler<AppEnv> = async (c, next) => {
       role: payload.role as Role,
       level: (payload.level as string | null) ?? null,
       name: (payload.name as string) ?? "Unknown",
+      mustChangePassword: payload.mustChangePassword === true,
     });
   } catch {
     // Expired and forged are the same answer to the caller. Telling them which
     // is a small gift to somebody probing.
     return c.json({ error: "Sign in again" }, 401);
+  }
+
+  /*
+    A password somebody else chose is a shared secret until it is replaced.
+
+    Enforced here rather than in the interface, because a screen that merely
+    redirects is a screen an API client walks straight past — and the whole
+    point is that this credential cannot be used to do work. The only thing a
+    caller in this state may reach is the change itself.
+  */
+  /*
+    Two exceptions, not one. `/api/me` has to answer or the app cannot find out
+    *why* it is being refused — it would read the 403 as "not signed in" and
+    send the reader to the sign-in screen they have just come from, in a loop.
+  */
+  const caller = c.get("caller");
+  const allowedWhileLocked = c.req.path === "/api/me/password" || c.req.path === "/api/me";
+  if (caller.mustChangePassword && !allowedWhileLocked) {
+    return c.json(
+      {
+        error: "Choose your own password before you carry on.",
+        mustChangePassword: true,
+      },
+      403,
+    );
   }
 
   await next();

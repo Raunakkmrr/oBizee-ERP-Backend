@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { zBody } from "../lib/validate.ts";
 import { apiRouter } from "../lib/router.ts";
+import { revokeRefreshToken } from "../auth/sign-in.ts";
 import { callerIp, clear, consumeAll, LIMITS, tooMany } from "../lib/rate-limit.ts";
 import { z } from "zod";
 import { e164 } from "../lib/phone.ts";
@@ -155,5 +156,22 @@ authRoutes.post(
       accessToken: result.accessToken,
       refreshToken: result.refreshToken,
     });
+  },
+);
+
+/**
+ * Sign out — the token dies with the click.
+ *
+ * Unauthenticated on purpose: an expired access token must not stop somebody
+ * ending their session, and the refresh token in the body is proof enough of
+ * what to revoke. Always answers the same way, so it cannot be used to ask
+ * whether a token was real.
+ */
+authRoutes.post(
+  "/sign-out",
+  zBody(z.object({ refreshToken: z.string().min(1) })),
+  async (c) => {
+    await revokeRefreshToken(c.req.valid("json").refreshToken);
+    return c.json({ signedOut: true });
   },
 );

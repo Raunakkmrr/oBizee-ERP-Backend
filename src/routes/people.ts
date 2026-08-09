@@ -29,6 +29,8 @@ import { ROLES } from "../auth/roles.ts";
 import { db } from "../db/client.ts";
 import { users } from "../db/schema.ts";
 import { audit } from "../lib/audit.ts";
+import { hashPassword } from "../auth/password.ts";
+import { revokeAllForUser } from "../auth/sign-in.ts";
 import { e164 } from "../lib/phone.ts";
 import { apiRouter } from "../lib/router.ts";
 import { zBody } from "../lib/validate.ts";
@@ -51,6 +53,17 @@ const personFields = z.object({
   phone: z.string().trim().min(1).nullable().optional(),
   skills: z.array(z.string().trim().min(1)).max(20).default([]),
   localities: z.array(z.string().trim().min(1)).max(20).default([]),
+  /**
+   * The password this person starts with, chosen by the owner.
+   *
+   * Only meaningful with an email — field staff sign in by phone and OTP and
+   * never have one. Whoever holds it is made to replace it before they can do
+   * anything, because a password somebody else typed is a shared secret.
+   *
+   * Ten characters and no composition rule: "one uppercase, one digit, one
+   * symbol" reliably produces Password@1.
+   */
+  initialPassword: z.string().min(10).max(200).nullable().optional(),
 });
 
 const person = personFields
@@ -106,11 +119,16 @@ peopleRoutes.post("/", requirePermission("people:manage"), zBody(person), async 
       localities: body.localities,
       active: true,
       /*
-        No password. An office user gets one by using the reset flow, so it is
-        never typed by somebody else and never travels through this API — the
-        person who sets a password should be the person who knows it.
+        An owner-chosen password, if one was given, and a standing instruction
+        to replace it.
+
+        This route used to store no password at all and a comment claimed the
+        person would set one "via the reset flow" — a flow that did not exist.
+        Every office user added through the product was therefore created
+        unable to sign in, and nothing said so.
       */
-      passwordHash: null,
+      passwordHash: body.initialPassword ? await hashPassword(body.initialPassword) : null,
+      mustChangePassword: Boolean(body.initialPassword),
     })
     .returning({ id: users.id, name: users.name, role: users.role });
 
@@ -239,6 +257,19 @@ peopleRoutes.post(
       .set({ active })
       .where(eq(users.id, id))
       .returning({ id: users.id, name: users.name, active: users.active });
+
+    /*
+      Withdrawing access has to actually withdraw it.
+
+      Deactivation used to change a boolean that only the *sign-in* path read,
+      so anybody already signed in kept working — and could refresh forever,
+      because nothing revoked their refresh tokens either. The button removed
+      access from nobody who was using the product at the time.
+
+      Their access token survives until it expires, fifteen minutes at most,
+      and then there is nothing left to renew it with.
+    */
+    if (!active) await revokeAllForUser(caller.tenantId, id);
 
     await audit(
       caller,
