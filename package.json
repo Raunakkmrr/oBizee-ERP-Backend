@@ -13,7 +13,8 @@
     "db:studio": "drizzle-kit studio",
     "test": "node --experimental-strip-types --env-file-if-exists=.env node_modules/vitest/vitest.mjs run",
     "dev": "node --env-file=.env --experimental-strip-types --watch src/server.ts",
-    "start": "node --env-file=.env --experimental-strip-types src/server.ts"
+    "start": "node --env-file=.env --experimental-strip-types src/server.ts",
+    "build:lambda": "node scripts/build-lambda.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",
@@ -28,6 +29,7 @@
   "devDependencies": {
     "@types/node": "^22.20.1",
     "drizzle-kit": "^0.31.10",
+    "esbuild": "^0.28.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10"
   }
