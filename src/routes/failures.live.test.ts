@@ -406,7 +406,9 @@ describe.skipIf(!reachable)("how the API refuses", () => {
       const email = `probe${stamp}@shakticooling.test`;
       const given = "handed-over-2026";
 
-      await post("/api/people", { name: `Probe ${stamp}`, role: "accountant", email, initialPassword: given }, auth);
+      const probe = (await (
+        await post("/api/people", { name: `Probe ${stamp}`, role: "accountant", email, initialPassword: given }, auth)
+      ).json()) as { id: string };
 
       const first = (await (await post("/auth/password", { email, password: given })).json()) as {
         accessToken: string;
@@ -417,6 +419,21 @@ describe.skipIf(!reachable)("how the API refuses", () => {
 
       // Enforced by the API, not by a screen that a client could walk past.
       expect((await fetch(`${BASE}/api/customers`, { headers: asThem })).status).toBe(403);
+
+      /*
+        **Put the probe back.**
+
+        This test creates a real office user in the development tenant and left
+        it there, so every run added one more — forty-eight of them, three
+        quarters of an active Team screen, all named `Probe <pid><ms>`.
+
+        Deactivated rather than deleted, because `audit_entries.actor_user_id`
+        references this row and that table refuses DELETE by trigger. That is
+        the correct guarantee — who did what does not become erasable because
+        the doer was a test — so the cleanup an insert-only trail permits is to
+        revoke access, which is also exactly what the product does to a leaver.
+      */
+      await post(`/api/people/${probe.id}/active`, { active: false }, auth);
 
       expect((await post("/api/me/password", { currentPassword: given, newPassword: "short" }, asThem)).status).toBe(400);
       expect((await post("/api/me/password", { currentPassword: "not-the-one", newPassword: "a-long-enough-one" }, asThem)).status).toBe(401);
