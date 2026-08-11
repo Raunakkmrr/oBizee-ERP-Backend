@@ -535,6 +535,16 @@ export const invoices = pgTable(
     financialYear: integer("financial_year").notNull(),
     jobId: uuid("job_id").references(() => jobs.id),
     contractId: uuid("contract_id").references(() => contracts.id),
+    /**
+     * Which slice of the contract this bills — FR-505.
+     *
+     * Null on an ad-hoc invoice, which covers a visit rather than a period. A
+     * partial unique index makes one live invoice per contract period a
+     * database guarantee, so two coordinators clicking the same row cannot
+     * bill August twice; cancelling frees the period again.
+     */
+    periodStart: date("period_start"),
+    periodEnd: date("period_end"),
     /** Which instalment of the contract's schedule this settles. */
     contractPoint: integer("contract_point"),
     customerId: uuid("customer_id").notNull().references(() => customers.id),

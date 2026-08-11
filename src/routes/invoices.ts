@@ -3,7 +3,7 @@ import { z } from "zod";
 import { and, asc, count, eq } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import {
-  branches, contracts, customers, invoiceLines, invoices, jobs, payments, sites, tenants,
+  branches, contracts, contractSchedules, customers, invoiceLines, invoices, jobs, payments, sites, tenants,
 } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
@@ -16,6 +16,8 @@ import {
 } from "../lib/tax.ts";
 import { financialYear, formatNumber, nextInSeries } from "../lib/series.ts";
 import { audit } from "../lib/audit.ts";
+import { billablePeriods, type BillingFrequency } from "../lib/billing-periods.ts";
+import { inArray, ne } from "drizzle-orm";
 
 /**
  * Invoices — FR-802, FR-803, FR-812, FR-1101.
@@ -33,6 +35,146 @@ import { audit } from "../lib/audit.ts";
  * constraint as a second line of defence.
  */
 export const invoiceRoutes = apiRouter();
+
+/**
+ * What the work has earned and nobody has billed yet.
+ *
+ * **The flow Raunak described**: a visit is booked, dated, assigned, done — and
+ * then that period's invoice becomes available. This is the "available" half.
+ * It creates nothing: FR-805 makes an invoice immutable the moment it is
+ * issued, so a legally-numbered document raised automatically by a rule is a
+ * mistake that cannot be withdrawn, only cancelled — leaving a hole in the
+ * series somebody has to explain. A person still presses the button; this route
+ * only makes sure they know there is one to press.
+ *
+ * Read-permissioned rather than write-permissioned, because seeing what is
+ * owed is not the same act as billing it.
+ */
+invoiceRoutes.get("/due", requirePermission("invoice:read"), async (c) => {
+  const { tenantId } = c.get("caller");
+
+  const live = await db
+    .select({
+      id: contracts.id,
+      reference: contracts.reference,
+      customerId: contracts.customerId,
+      customer: customers.name,
+      billing: contracts.billing,
+      startDate: contracts.startDate,
+      endDate: contracts.endDate,
+      annualValuePaise: contracts.annualValuePaise,
+    })
+    .from(contracts)
+    .innerJoin(customers, eq(contracts.customerId, customers.id))
+    .where(and(eq(contracts.tenantId, tenantId), eq(contracts.status, "ACTIVE")));
+
+  if (live.length === 0) return c.json({ due: [], totalPaise: 0 });
+
+  const contractIds = live.map((row) => row.id);
+
+  /*
+    Two reads, both across every contract at once.
+
+    A request per contract would be a round trip per row on a screen that
+    exists to show the whole book, and the Neon HTTP driver charges a round
+    trip for each one.
+  */
+  const [visits, billed] = await Promise.all([
+    /*
+      A job names its *schedule*, not its contract.
+
+      FR-1406's multi-schedule contracts are the reason: one contract can carry
+      several cadences, so the job hangs off the cadence that produced it and
+      the contract is one join further out.
+    */
+    db
+      .select({
+        contractId: contractSchedules.contractId,
+        scheduledDate: jobs.scheduledDate,
+        status: jobs.status,
+      })
+      .from(jobs)
+      .innerJoin(contractSchedules, eq(jobs.contractScheduleId, contractSchedules.id))
+      .where(
+        and(
+          eq(jobs.tenantId, tenantId),
+          inArray(contractSchedules.contractId, contractIds),
+        ),
+      ),
+    db
+      .select({
+        contractId: invoices.contractId,
+        periodStart: invoices.periodStart,
+        contractPoint: invoices.contractPoint,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.tenantId, tenantId),
+          inArray(invoices.contractId, contractIds),
+          // A cancelled bill leaves its period billable again, or one mistake
+          // would lock a month out for ever.
+          ne(invoices.status, "CANCELLED"),
+        ),
+      ),
+  ]);
+
+  const visitsBy = new Map<string, { scheduledDate: string | null; status: string }[]>();
+  for (const visit of visits) {
+    if (!visit.contractId) continue;
+    const bucket = visitsBy.get(visit.contractId) ?? [];
+    bucket.push({ scheduledDate: visit.scheduledDate, status: visit.status });
+    visitsBy.set(visit.contractId, bucket);
+  }
+
+  const billedBy = new Map<string, { periodStarts: Set<string>; instalments: Set<number> }>();
+  for (const row of billed) {
+    if (!row.contractId) continue;
+    const bucket =
+      billedBy.get(row.contractId) ??
+      { periodStarts: new Set<string>(), instalments: new Set<number>() };
+    if (row.periodStart) bucket.periodStarts.add(row.periodStart);
+    if (row.contractPoint !== null) bucket.instalments.add(row.contractPoint);
+    billedBy.set(row.contractId, bucket);
+  }
+
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+
+  const due = live.flatMap((contract) =>
+    billablePeriods(
+      {
+        billing: contract.billing as BillingFrequency,
+        startDate: contract.startDate,
+        endDate: contract.endDate,
+        annualValuePaise: contract.annualValuePaise,
+      },
+      visitsBy.get(contract.id) ?? [],
+      billedBy.get(contract.id) ?? { periodStarts: new Set(), instalments: new Set() },
+      today,
+    ).map((earned) => ({
+      contractId: contract.id,
+      reference: contract.reference,
+      customerId: contract.customerId,
+      customer: contract.customer,
+      billing: contract.billing,
+      instalment: earned.period.number,
+      periodStart: earned.period.start,
+      periodEnd: earned.period.end,
+      valuePaise: earned.period.valuePaise,
+      visits: earned.visits,
+      visitsDone: earned.visitsDone,
+      reason: earned.reason,
+    })),
+  );
+
+  // Oldest first: the money that has been owed longest is the money to chase.
+  due.sort((a, b) => a.periodStart.localeCompare(b.periodStart));
+
+  return c.json({
+    due,
+    totalPaise: due.reduce((sum, row) => sum + row.valuePaise, 0),
+  });
+});
 
 /** Frozen onto the invoice at issue — a document keeps what was printed on it. */
 type BillTo = {
@@ -181,6 +323,17 @@ const createInvoice = z
     jobId: z.string().uuid().optional(),
     contractId: z.string().uuid().optional(),
     contractPoint: z.number().int().positive().optional(),
+    /**
+     * Which slice of the contract this settles — FR-505.
+     *
+     * `contractPoint` numbers the instalment; these name the dates it covers.
+     * The dates are what the partial unique index enforces, so they are what
+     * stops August being billed twice — and what lets the document say
+     * "1 Aug to 31 Aug" rather than "instalment 5", which is the only one of
+     * the two a customer can check.
+     */
+    periodStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    periodEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     customerId: z.string().uuid().optional(),
     siteId: z.string().uuid().optional(),
     lines: z.array(lineInput).min(1),
@@ -191,6 +344,14 @@ const createInvoice = z
   )
   .refine((v) => !v.contractId || v.contractPoint !== undefined, {
     message: "A contract invoice must say which instalment it settles",
+  })
+  // Both or neither, matching the CHECK on the table. A period with one end is
+  // not a period, and half of one would slip past the uniqueness guarantee.
+  .refine((v) => (v.periodStart === undefined) === (v.periodEnd === undefined), {
+    message: "A billing period needs both a start and an end",
+  })
+  .refine((v) => !v.periodStart || !!v.contractId, {
+    message: "Only a contract invoice covers a billing period",
   });
 
 invoiceRoutes.post(
@@ -291,6 +452,8 @@ invoiceRoutes.post(
         jobId,
         contractId,
         contractPoint: body.contractPoint ?? null,
+        periodStart: body.periodStart ?? null,
+        periodEnd: body.periodEnd ?? null,
         customerId,
         siteId,
         billTo: resolved.billTo,
