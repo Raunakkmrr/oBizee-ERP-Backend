@@ -1,10 +1,11 @@
 import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, ilike, inArray, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "../db/client.ts";
 import {
   branches,
+  contacts,
   customers,
   jobEvents,
   jobHelpers,
@@ -40,6 +41,150 @@ export const jobRoutes = apiRouter();
 /** The primary technician, aliased so a second join can never collide. */
 const technician = alias(users, "primary_technician");
 
+/**
+ * How many rows a page holds.
+ *
+ * The list used to end in a bare `.limit(200)` — no total, no next page, no
+ * indication. Under two hundred jobs nobody would ever notice; a firm doing
+ * twenty visits a day crosses it in ten days, and from then on the oldest work
+ * orders are absent from a screen headed "every work order". Silent truncation
+ * is the worst of the three options, because the screen still looks complete.
+ */
+const PAGE_SIZE = 50;
+const MAX_PAGE_SIZE = 100;
+
+/**
+ * Two characters. One is every job.
+ *
+ * Below this the query is ignored rather than refused, so a box being typed
+ * into shows the unfiltered list instead of an error that appears and vanishes
+ * on the second keystroke.
+ */
+const MIN_QUERY = 2;
+
+/**
+ * The board's five views, plus the one the record needs.
+ *
+ * These are applied **here**, not in the browser, for the same reason the
+ * search is: the list is paged, so filtering fifty rows in hand and calling the
+ * result "Unassigned (3)" would be a count of this page rather than of the
+ * firm. The five names are §6.4.1's own, so a coordinator moving between Today
+ * and Jobs does not relearn the vocabulary.
+ *
+ * `unscheduled` is the sixth and belongs only to the record. The board has no
+ * use for it — a job with no date cannot be dispatched today — but it is the
+ * fastest way to find the stubs somebody started and never finished, which is
+ * otherwise a needle in the whole table.
+ */
+const FILTERS = [
+  "unassigned",
+  "en_route",
+  "on_site",
+  "parts_awaited",
+  "done_not_billed",
+  "unscheduled",
+] as const;
+
+const listQuery = z.object({
+  q: z.string().trim().max(120).optional(),
+  filter: z.enum(FILTERS).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_PAGE_SIZE).default(PAGE_SIZE),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+/** One definition, matching `matchesFilter` in the web app row-for-row. */
+function filterPredicate(filter: (typeof FILTERS)[number]) {
+  switch (filter) {
+    case "unassigned":
+      return sql`${jobs.primaryTechnicianId} is null`;
+    case "en_route":
+      return eq(jobs.status, "EN_ROUTE");
+    case "on_site":
+      return eq(jobs.status, "ON_SITE");
+    case "parts_awaited":
+      return eq(jobs.status, "PARTS_AWAITED");
+    case "done_not_billed":
+      return inArray(jobs.status, ["WORK_DONE", "SIGNED_OFF"]);
+    case "unscheduled":
+      return sql`${jobs.scheduledDate} is null`;
+  }
+}
+
+/**
+ * What the search looks at, and why each one is on the list.
+ *
+ * `q` reaches this having been typed by somebody with a customer on the line,
+ * so it is matched three ways at once:
+ *
+ * - **substring**, for the things read back off a screen — a job number, a
+ *   locality, the tail of a phone number;
+ * - **trigram similarity**, for the things typed from memory — "Kumar" has to
+ *   find "Rani Kumari" and "Deshmuk" has to find "Deshmukh Hospital", which no
+ *   amount of prefix matching will do;
+ * - **digits only**, for phones, because a caller reads "98116 67788" with a
+ *   space and the column holds `919811667788`.
+ *
+ * Similarity alone would be wrong: `pg_trgm`'s default 0.3 threshold refuses
+ * short queries outright, and "1007" against "J-2610-1007" scores far below it
+ * while being an exact substring. Substring alone would be wrong for every
+ * misspelling. Both, OR-ed, is what makes the box feel like it works.
+ */
+function searchPredicate(raw: string) {
+  const like = `%${raw}%`;
+  const digits = raw.replace(/\D/g, "");
+
+  const clauses = [
+    ilike(jobs.jobNumber, like),
+    ilike(jobs.serviceType, like),
+    ilike(customers.name, like),
+    ilike(sites.locality, like),
+    ilike(technician.name, like),
+    // `%` is pg_trgm's similarity operator, and the one the GIN indexes serve.
+    sql`${customers.name} % ${raw}`,
+    sql`${technician.name} % ${raw}`,
+  ];
+
+  /*
+    Three digits before a phone is worth searching. Fewer matches most numbers
+    in the book, which is not a search result — it is the whole list wearing a
+    disguise.
+  */
+  if (digits.length >= 3) {
+    clauses.push(
+      exists(
+        db
+          .select({ one: sql`1` })
+          .from(contacts)
+          .where(
+            and(
+              eq(contacts.siteId, jobs.siteId),
+              ilike(contacts.phoneE164, `%${digits}%`),
+            ),
+          ),
+      ),
+    );
+  }
+
+  return or(...clauses);
+}
+
+/**
+ * Best match first, but only while searching.
+ *
+ * With no query the list is a record and reads newest-first. With one it is an
+ * answer to a question, and the row that answers it belongs at the top —
+ * otherwise searching "Kumari" puts her October visit above her June one and
+ * buries both under whatever else happens to match.
+ */
+function searchRank(raw: string) {
+  return sql`greatest(
+    similarity(${customers.name}, ${raw}),
+    similarity(coalesce(${technician.name}, ''), ${raw}),
+    similarity(${jobs.jobNumber}, ${raw}),
+    similarity(${jobs.serviceType}, ${raw})
+  )`;
+}
+
 jobRoutes.get("/", async (c) => {
   const caller = c.get("caller");
 
@@ -59,9 +204,51 @@ jobRoutes.get("/", async (c) => {
     );
   }
 
+  const parsed = listQuery.safeParse(c.req.query());
+  if (!parsed.success) {
+    return c.json({ error: "That is not a page of jobs.", detail: parsed.error.issues }, 400);
+  }
+  const { limit, offset } = parsed.data;
+  const raw = parsed.data.q ?? "";
+  const searching = raw.length >= MIN_QUERY;
+
+  /*
+    FR-306 is applied *before* the search, never after.
+
+    A technician searching "Shakti" must not learn that a job at Shakti exists
+    and merely belongs to somebody else. Narrowing first means the search runs
+    over the rows he is allowed to see, so an absent result and an unauthorised
+    one are the same answer.
+  */
   const scope = seesEverything
     ? eq(jobs.tenantId, caller.tenantId)
     : and(eq(jobs.tenantId, caller.tenantId), eq(jobs.primaryTechnicianId, caller.userId));
+
+  const where = and(
+    scope,
+    searching ? searchPredicate(raw) : undefined,
+    parsed.data.filter ? filterPredicate(parsed.data.filter) : undefined,
+  );
+
+  /*
+    The true total, counted with the same joins and the same filter.
+
+    A second round trip, and worth it: "showing 50 of 1,284" is the sentence
+    that was missing, and it is the only way a reader can tell a short list
+    from a truncated one.
+  */
+  const [counted] = await db
+    .select({ total: count() })
+    .from(jobs)
+    .innerJoin(customers, eq(jobs.customerId, customers.id))
+    .innerJoin(sites, eq(jobs.siteId, sites.id))
+    .leftJoin(technician, eq(jobs.primaryTechnicianId, technician.id))
+    .where(where);
+
+  // `count()` over a grouped-less select always returns one row; the zero case
+  // is a zero, not an absent row. Defaulted anyway so a shape change here
+  // cannot become a 500 on the list everybody opens first.
+  const total = counted?.total ?? 0;
 
   const rows = await db
     .select({
@@ -88,14 +275,28 @@ jobRoutes.get("/", async (c) => {
     .innerJoin(customers, eq(jobs.customerId, customers.id))
     .innerJoin(sites, eq(jobs.siteId, sites.id))
     .leftJoin(technician, eq(jobs.primaryTechnicianId, technician.id))
-    .where(scope)
+    .where(where)
     /*
       Newest first by the date the work is *for*, not the row's birthday. A
       visit generated today for October is not newer than one happening
       tomorrow, and this is the record rather than the dispatch board.
+
+      **Undated last, explicitly.** Postgres puts NULLs *first* under DESC, so a
+      job with no date sat above every dated one — and since an undated job is
+      usually a stub nobody has scheduled, the top of the record was a wall of
+      them and the real work started somewhere below the fold. They are found by
+      the Unscheduled filter and marked in the row, which is a deliberate way to
+      surface a problem; sorting by accident is not.
     */
-    .orderBy(desc(jobs.scheduledDate), desc(jobs.createdAt))
-    .limit(200);
+    .orderBy(
+      ...(searching ? [desc(searchRank(raw))] : []),
+      sql`${jobs.scheduledDate} desc nulls last`,
+      desc(jobs.createdAt),
+      // A stable last resort, so a row cannot appear on two pages or neither.
+      asc(jobs.id),
+    )
+    .limit(limit)
+    .offset(offset);
 
   /*
     FR-1302. Stripped server-side unless the caller may see selling prices.
@@ -134,6 +335,19 @@ jobRoutes.get("/", async (c) => {
       : stripFields(shaped, [...PRICE_FIELDS] as (keyof (typeof shaped)[number])[]),
     pricesVisible: maySeePrices,
     scope: seesEverything ? "all" : "own",
+    /*
+      The page, stated rather than implied. `total` is what the filter actually
+      matches; `hasMore` is derived here so no reader has to do the arithmetic
+      and get it wrong at the last page.
+    */
+    total,
+    limit,
+    offset,
+    hasMore: offset + shaped.length < total,
+    // Echoed back so a slow response cannot repaint the list for a query the
+    // reader has already replaced.
+    query: searching ? raw : null,
+    filter: parsed.data.filter ?? null,
   });
 });
 
