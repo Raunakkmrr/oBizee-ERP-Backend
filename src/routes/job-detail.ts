@@ -182,6 +182,18 @@ jobDetailRoutes.get("/:id", async (c) => {
     priority: row.job.priority,
     customer: row.customer,
     serviceType: row.job.serviceType,
+    /*
+      When the work is for.
+
+      Both of these were on the selected row all along and neither reached the
+      response, so the one screen devoted to a single job could not say what day
+      it happened on. FR-203 is explicit that a schedule is **a date and a
+      slot**, and the detail page was showing neither — which also meant nothing
+      on it could be marked late, because it did not know there was a date to
+      have passed.
+    */
+    scheduledDate: row.job.scheduledDate,
+    slot: row.job.slot,
     visit:
       row.job.visitNumber !== null && row.job.visitOf !== null
         ? { n: row.job.visitNumber, of: row.job.visitOf }
