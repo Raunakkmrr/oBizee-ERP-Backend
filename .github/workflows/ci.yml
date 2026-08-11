@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# What this can prove, and what it cannot.
+#
+# The live tests — tenancy isolation, row-level security, the rate limiter, the
+# numbering series — talk to a real database through Neon's HTTP driver, which
+# speaks Neon's proxy rather than the Postgres wire protocol. A `postgres:16`
+# service container is therefore not a stand-in for it, and pointing CI at the
+# real database would have every push mutating the data the demos run against.
+#
+# So those tests skip here and say so: 77 of the 120 run, 43 skip. That is not
+# the whole suite and this file does not pretend otherwise — the live ones run
+# against a real database before a deploy, and `nfr-gates.ts` and the E2E suite
+# are the other half.
+#
+# The connection strings below are deliberately unresolvable. The driver refuses
+# to load without one at all, so CI has to provide something, and `db/live.ts`
+# probes rather than trusting that a variable is set — which is what makes the
+# skip honest instead of a crash.
+#
+# 77 in CI is still the difference between a broken push being caught in two
+# minutes and being caught by a customer.
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches .nvmrc. Type stripping and --env-file both need 22.
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Types
+        run: pnpm exec tsc --noEmit
+
+      - name: Tests
+        env:
+          # Unresolvable on purpose. Everything that needs a real database
+          # probes it and skips; nothing silently passes for lack of one.
+          DATABASE_URL: postgresql://ci:ci@ci.invalid/ci?sslmode=require
+          APP_DATABASE_URL: postgresql://ci:ci@ci.invalid/ci?sslmode=require
+          JWT_SECRET: ci-only-not-a-real-secret-at-least-32-chars
+          OTP_PROVIDER: dev
+          OTP_DEV_MODE: "on"
+          API_URL: http://ci.invalid
+        # The skip count is printed, which is the point: a suite that quietly
+        # skipped everything looks identical to a green one.
+        run: pnpm exec vitest run
+
+      - name: The Lambda bundle builds and is importable
+        # Catches the class of failure that only appears at deploy: a dependency
+        # that cannot be bundled, or an ESM/CJS problem that a type-check has no
+        # opinion about.
+        run: |
+          pnpm run build:lambda
+          node --input-type=module -e "
+            const m = await import('./dist/lambda/index.mjs');
+            if (typeof m.handler !== 'function') throw new Error('no handler export');
+            console.log('handler exports cleanly');
+          "

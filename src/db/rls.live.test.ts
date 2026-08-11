@@ -17,12 +17,11 @@ import { sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { adminDb, db, withTenant } from "./client.ts";
+import { databaseIsLive } from "./live.ts";
 import { customers, tenants } from "./schema.ts";
 
-const reachable = await adminDb
-  .execute(sql`select 1`)
-  .then(() => true)
-  .catch(() => false);
+/* Probed once in live.ts rather than per file. */
+const reachable = databaseIsLive;
 
 /**
  * Every message in the chain, flattened.

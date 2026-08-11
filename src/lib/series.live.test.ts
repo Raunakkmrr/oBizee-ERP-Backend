@@ -20,9 +20,11 @@ import { sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { adminDb as db } from "../db/client.ts";
+import { databaseIsLive } from "../db/live.ts";
 import { branches, tenants } from "../db/schema.ts";
 
-const live = Boolean(process.env.DATABASE_URL);
+/* A database that answers, not a string that exists — see db/live.ts. */
+const live = databaseIsLive;
 
 /** A financial year no real document occupies, so the test burns no numbers. */
 const TEST_FY = 1900;

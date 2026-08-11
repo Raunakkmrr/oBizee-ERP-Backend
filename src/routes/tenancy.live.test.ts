@@ -20,14 +20,14 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { hashPassword } from "../auth/password.ts";
 import { adminDb as db } from "../db/client.ts";
+import { apiIsLive } from "../db/live.ts";
 import { branches, customers, sites, tenants, users } from "../db/schema.ts";
 
 const BASE = process.env.API_URL ?? "http://localhost:8787";
 const OTHER_FIRM = "Verma Cooling Works Pvt Ltd";
 
-const reachable = await fetch(`${BASE}/health`)
-  .then((r) => r.ok)
-  .catch(() => false);
+/* Probed once in db/live.ts rather than per file. */
+const reachable = apiIsLive;
 
 async function post(path: string, body: unknown, headers: Record<string, string> = {}) {
   return fetch(`${BASE}${path}`, {

@@ -12,9 +12,11 @@ import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import { adminDb as db } from "../db/client.ts";
+import { databaseIsLive } from "../db/live.ts";
 import { callerIp, refund } from "./rate-limit.ts";
 
-const live = Boolean(process.env.DATABASE_URL);
+/* A database that answers, not a string that exists — see db/live.ts. */
+const live = databaseIsLive;
 
 /** A key nothing else touches, so the budget starts full. */
 function freshKey(name: string): string {
