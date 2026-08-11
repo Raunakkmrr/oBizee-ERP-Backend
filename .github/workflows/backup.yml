@@ -60,11 +60,32 @@ jobs:
           sudo apt-get install -y -qq postgresql-client-16
           pg_dump --version
 
+      - name: Refuse anything but the owner connection
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        # The failure this prevents is the quiet one. `app_runtime` cannot bypass
+        # row-level security, and with no tenant set every policy evaluates false
+        # — so a dump taken with that connection string contains a complete
+        # schema and zero rows in every tenant table. It restores perfectly.
+        #
+        # The row-count comparison further down does catch it, because
+        # `pg_stat_user_tables` is not filtered by RLS and still reports the real
+        # numbers. That is a happy accident of which source the manifest uses,
+        # and a backup is not something to leave resting on one.
+        run: |
+          test -n "$DATABASE_URL" || { echo "DATABASE_URL secret is not set"; exit 1; }
+          ROLE=$(psql "$DATABASE_URL" -At -c "select current_user")
+          BYPASS=$(psql "$DATABASE_URL" -At -c "select rolbypassrls from pg_roles where rolname = current_user")
+          echo "connected as $ROLE (bypassrls=$BYPASS)"
+          if [ "$BYPASS" != "t" ]; then
+            echo "::error::$ROLE cannot bypass row-level security. A dump taken with it would be schema-complete and empty. Use the DATABASE_URL (neondb_owner), not APP_DATABASE_URL."
+            exit 1
+          fi
+
       - name: Take the dump
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          test -n "$DATABASE_URL" || { echo "DATABASE_URL secret is not set"; exit 1; }
           mkdir -p backup
           STAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
           echo "STAMP=$STAMP" >> "$GITHUB_ENV"
