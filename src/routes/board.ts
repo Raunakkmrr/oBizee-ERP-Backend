@@ -18,29 +18,13 @@ import { can } from "../auth/roles.ts";
 import { db } from "../db/client.ts";
 import { customers, jobEvents, jobs, leads, sites, users } from "../db/schema.ts";
 import { apiRouter } from "../lib/router.ts";
+import { sla } from "../lib/sla.ts";
 
 export const boardRoutes = apiRouter();
 
 /** Statuses that count as the technician still being out on that job. */
 const EN_ROUTE = "EN_ROUTE";
 const ON_SITE = ["ON_SITE"];
-
-/**
- * `Due 2h` / `Late 1d` — a word, never a bare colour (§6.4.2, P3).
- *
- * Null when nothing was promised. A job with no promise has no SLA to miss,
- * and inventing an "ok" chip for it would put a reassuring green on a job
- * nobody has committed to.
- */
-function sla(promisedBy: Date | null, now: Date): { word: string; kind: "due_soon" | "late" | "ok" } | null {
-  if (!promisedBy) return null;
-  const ms = promisedBy.getTime() - now.getTime();
-  const hours = Math.abs(ms) / 3_600_000;
-  const word = hours >= 24 ? `${Math.round(hours / 24)}d` : `${Math.max(1, Math.round(hours))}h`;
-  if (ms < 0) return { word: `Late ${word}`, kind: "late" };
-  if (hours <= 4) return { word: `Due ${word}`, kind: "due_soon" };
-  return { word: `Due ${word}`, kind: "ok" };
-}
 
 /** `11:42` in IST — the duration is what tells a coordinator he is nearly free. */
 function clockWord(at: Date): string {

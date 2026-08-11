@@ -1,6 +1,7 @@
 import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
 import { and, desc, eq, inArray } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { db } from "../db/client.ts";
 import {
   branches,
@@ -18,6 +19,7 @@ import {
   type AppEnv,
 } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
+import { sla } from "../lib/sla.ts";
 import { can } from "../auth/roles.ts";
 import { formatNumber, nextInSeries } from "../lib/series.ts";
 import { audit } from "../lib/audit.ts";
@@ -34,6 +36,9 @@ import { audit } from "../lib/audit.ts";
  * of supply — and therefore the tax head — derivable at all.
  */
 export const jobRoutes = apiRouter();
+
+/** The primary technician, aliased so a second join can never collide. */
+const technician = alias(users, "primary_technician");
 
 jobRoutes.get("/", async (c) => {
   const caller = c.get("caller");
@@ -69,15 +74,27 @@ jobRoutes.get("/", async (c) => {
       slot: jobs.slot,
       visitAttempt: jobs.visitAttempt,
       valuePaise: jobs.valuePaise,
-      customerName: customers.name,
-      siteLocality: sites.locality,
+      customer: customers.name,
+      locality: sites.locality,
       siteStateCode: sites.stateCode,
+      technicianId: jobs.primaryTechnicianId,
+      technicianName: technician.name,
+      visitNumber: jobs.visitNumber,
+      visitOf: jobs.visitOf,
+      visitKey: jobs.visitKey,
+      promisedBy: jobs.promisedBy,
     })
     .from(jobs)
     .innerJoin(customers, eq(jobs.customerId, customers.id))
     .innerJoin(sites, eq(jobs.siteId, sites.id))
+    .leftJoin(technician, eq(jobs.primaryTechnicianId, technician.id))
     .where(scope)
-    .orderBy(desc(jobs.createdAt))
+    /*
+      Newest first by the date the work is *for*, not the row's birthday. A
+      visit generated today for October is not newer than one happening
+      tomorrow, and this is the record rather than the dispatch board.
+    */
+    .orderBy(desc(jobs.scheduledDate), desc(jobs.createdAt))
     .limit(200);
 
   /*
@@ -87,10 +104,34 @@ jobRoutes.get("/", async (c) => {
     the firm.
   */
   const maySeePrices = can(caller.role, "price:view_selling", undefined, caller.level);
+
+  /*
+    Shaped like the board's rows, deliberately.
+
+    The Jobs screen renders the same row and reuses the board's own filters, so
+    a second shape would mean a second set of them. It called `/api/board/today`
+    for exactly that reason — and got only today's work under a heading that
+    says "every work order", so a contract visit generated for October was
+    invisible on the screen whose job is to list it.
+  */
+  const now = new Date();
+  const shaped = rows.map((r) => ({
+    ...r,
+    slot: r.slot ?? "Unslotted",
+    locality: r.locality ?? "—",
+    technician: r.technicianId ? { id: r.technicianId, name: r.technicianName ?? "—" } : null,
+    visit:
+      r.visitNumber !== null || r.visitOf !== null
+        ? { n: r.visitNumber, of: r.visitOf }
+        : null,
+    // FR-207 — a word, never a bare colour, and the same words the board uses.
+    sla: sla(r.promisedBy, now),
+  }));
+
   return c.json({
     jobs: maySeePrices
-      ? rows
-      : stripFields(rows, [...PRICE_FIELDS] as (keyof (typeof rows)[number])[]),
+      ? shaped
+      : stripFields(shaped, [...PRICE_FIELDS] as (keyof (typeof shaped)[number])[]),
     pricesVisible: maySeePrices,
     scope: seesEverything ? "all" : "own",
   });
