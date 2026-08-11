@@ -86,6 +86,22 @@ export class Msg91OtpSender implements OtpSender {
 }
 
 /**
+ * Does this sender put a real message on a real phone?
+ *
+ * Asked by the rate limiter, which prices `/auth/otp/request` in SMS — money
+ * out, and somebody's handset buzzing whether or not they asked for it. That
+ * price is real for every sender here except the development one, which writes
+ * a line to the console.
+ *
+ * A function beside the senders rather than a check at the call site, so that
+ * adding a fourth sender means answering this question about it. The default is
+ * the safe one: anything that is not the dev sender is assumed to cost money.
+ */
+export function sendsRealMessages(sender: OtpSender): boolean {
+  return sender.id !== "dev";
+}
+
+/**
  * Pick a sender from the environment.
  *
  * Defaults to nothing. An unset `OTP_PROVIDER` is a configuration mistake, and

@@ -4,6 +4,7 @@ import {
   DevOtpSender,
   Msg91OtpSender,
   otpSenderFrom,
+  sendsRealMessages,
 } from "./otp-sender.ts";
 
 /**
@@ -51,6 +52,27 @@ describe("selecting a sender", () => {
 
   it("requires MSG91 credentials before it will construct", () => {
     expect(() => otpSenderFrom({ OTP_PROVIDER: "msg91" })).toThrow(/required/);
+  });
+});
+
+describe("which senders cost money", () => {
+  /*
+    `/auth/otp/request` skips its rate limit when this is false, so a wrong
+    answer here is either an unlimited SMS bill or a locked-out developer.
+  */
+  it("says the dev sender does not, because it prints to a console", () => {
+    const dev = otpSenderFrom({ OTP_PROVIDER: "dev", OTP_DEV_MODE: "on", NODE_ENV: "test" });
+    expect(sendsRealMessages(dev)).toBe(false);
+  });
+
+  it("says MSG91 does", () => {
+    expect(sendsRealMessages(new Msg91OtpSender("key", "template"))).toBe(true);
+  });
+
+  it("assumes an unrecognised sender does, rather than the other way round", () => {
+    // The default has to be the expensive one: a sender added without thinking
+    // about this must inherit the budget, not the exemption.
+    expect(sendsRealMessages({ id: "some-new-gateway", send: async () => "000000" })).toBe(true);
   });
 });
 

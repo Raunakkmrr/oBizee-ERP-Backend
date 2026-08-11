@@ -53,6 +53,14 @@ function run(script: string): void {
  * A suite of thirty-five tests spends that faster than any person could. It is
  * refunded on success now, so this only covers the failures the suite causes
  * deliberately.
+ *
+ * The `otp:req:*` pair no longer does anything against a development API, and
+ * is kept rather than removed so that a run pointed at a target with a real SMS
+ * gateway still starts from a full budget. This clear used to be the only thing
+ * holding that suite up: the OTP request budget is spent per sign-in and
+ * refunded by nothing, so two runs after a prepare exhausted it and the third
+ * failed as a permissions bug. `routes/auth.ts` now skips that budget when the
+ * sender is not sending anything, which is where the problem actually was.
  */
 const BUDGETS = [
   "pw:account:manish@shakticooling.test",

@@ -5,7 +5,7 @@ import { revokeRefreshToken } from "../auth/sign-in.ts";
 import { callerIp, clear, consumeAll, LIMITS, refund, tooMany } from "../lib/rate-limit.ts";
 import { z } from "zod";
 import { e164 } from "../lib/phone.ts";
-import { otpSenderFrom } from "../auth/otp-sender.ts";
+import { otpSenderFrom, sendsRealMessages } from "../auth/otp-sender.ts";
 import {
   requestOtp,
   rotateRefresh,
@@ -57,22 +57,53 @@ const phoneBody = z.object({
 authRoutes.post("/otp/request", zBody( phoneBody), async (c) => {
   const { phone } = c.req.valid("json");
   const normalised = e164(phone);
-  const ip = callerIp(c);
+  /*
+    Chosen before the budget is spent, because what the budget is *for* depends
+    on which sender is about to run. A misconfigured `OTP_PROVIDER` now throws
+    before the counter moves rather than after — the same 500 for every number,
+    so it still says nothing about who is on file.
+  */
+  const sender = otpSenderFrom();
 
   /*
     Consumed before the send, and keyed on the *normalised* number so that
     9820012345, +919820012345 and 09820012345 share one budget rather than
     three. Each request here is an SMS: money out, and a message on somebody's
     real phone whether or not they asked for it.
+
+    Which is exactly why the development sender is exempt, and why it is the
+    only thing that is. `DevOtpSender` sends no SMS and buzzes no handset; it
+    prints a fixed code to the console. Charging an hour's lockout for a console
+    line is what made the E2E suite fail on its third run of the morning, with
+    two specs in `permissions.spec.ts` reporting a technician who could not see
+    their jobs — a permissions regression that never happened. A budget that
+    only ever fires on the people building the product is not defending anyone.
+
+    Read off the sender rather than a flag of its own, deliberately. A
+    `RATE_LIMIT_DEV` or a list of exempt test numbers would be a third switch to
+    set wrong, and the one that got set wrong would open the SMS budget in
+    production. The sender is already the hardened switch: `DevOtpSender` throws
+    at construction under `NODE_ENV=production`, and again without
+    `OTP_DEV_MODE=on`. Both of those must already be wrong before this exemption
+    can be reached, and in that state the process refuses to boot at all. With
+    `OTP_PROVIDER=msg91` the sender costs money, and every request is counted
+    exactly as before.
+
+    `/otp/verify` is *not* exempt, and must not become so. That door prices
+    guessing rather than sending, and guessing is as available in development as
+    anywhere else.
   */
-  const verdict = await consumeAll([
-    [`otp:req:phone:${normalised ?? phone}`, LIMITS.otpRequestPerPhone],
-    [`otp:req:ip:${ip}`, LIMITS.otpRequestPerIp],
-  ]);
-  if (!verdict.allowed) return tooMany(c, verdict.retryAfter);
+  if (sendsRealMessages(sender)) {
+    const ip = callerIp(c);
+    const verdict = await consumeAll([
+      [`otp:req:phone:${normalised ?? phone}`, LIMITS.otpRequestPerPhone],
+      [`otp:req:ip:${ip}`, LIMITS.otpRequestPerIp],
+    ]);
+    if (!verdict.allowed) return tooMany(c, verdict.retryAfter);
+  }
 
   if (normalised) {
-    await requestOtp(normalised, otpSenderFrom());
+    await requestOtp(normalised, sender);
   }
 
   /*

@@ -12,8 +12,8 @@ import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 
 import { adminDb as db } from "../db/client.ts";
-import { databaseIsLive } from "../db/live.ts";
-import { callerIp, refund } from "./rate-limit.ts";
+import { API_BASE, apiIsLive, databaseIsLive } from "../db/live.ts";
+import { callerIp, LIMITS, refund } from "./rate-limit.ts";
 
 /* A database that answers, not a string that exists — see db/live.ts. */
 const live = databaseIsLive;
@@ -129,6 +129,62 @@ describe.skipIf(!live)("consume_rate_limit", () => {
 
     // What a successful sign-in does: only failures accumulate.
     expect((await consumeRaw(key, 1)).allowed).toBe(true);
+  });
+});
+
+/**
+ * The OTP request budget, driven through the running API.
+ *
+ * The SQL above proves the counter counts. This proves the *route* spends it on
+ * the right thing — which is where it went wrong. Every other door refunds or
+ * clears on success, so `otp:req:*` were the only counters in the product that
+ * grew and never shrank, and the only things reliably reaching the ceiling were
+ * the E2E suite and the developer running it. Two specs in `permissions.spec.ts`
+ * failed on the third run of the morning with "element(s) not found" for the job
+ * links, which reads as a technician losing their board and was a 429 at the
+ * sign-in door.
+ */
+describe.skipIf(!apiIsLive)("POST /auth/otp/request", () => {
+  const post = (path: string, body: unknown) =>
+    fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  /* A number nobody has asked about, so its budget starts full. */
+  const unused = () => `98${String(Math.floor(Math.random() * 1e8)).padStart(8, "0")}`;
+
+  it("does not spend a budget when the sender is not sending anything", async () => {
+    /*
+      Comfortably past the ceiling — a suite run costs two, and somebody
+      iterating on the sign-in screen costs a dozen in a morning.
+
+      This asserts against the development sender, which is what a laptop and CI
+      both run. Under `OTP_PROVIDER=msg91` the sender costs money and the budget
+      applies unchanged; that is the branch the unit tests in
+      `auth/otp-sender.test.ts` pin, because asserting it here would mean
+      configuring a real SMS gateway to refuse to use it.
+    */
+    const phone = unused();
+    const attempts = LIMITS.otpRequestPerPhone.max + 3;
+    const codes: number[] = [];
+    for (let i = 0; i < attempts; i += 1) codes.push((await post("/auth/otp/request", { phone })).status);
+
+    expect(codes, "the OTP budget is charging development for console lines").toEqual(
+      Array(attempts).fill(200),
+    );
+  });
+
+  it("still checks the code — the exemption is the budget, not the door", async () => {
+    /*
+      The obvious way to get the suite green was to make the OTP path cheap by
+      making it lax. Nothing above should have touched verification: an
+      unrecognised number with an invented code is still a refusal.
+    */
+    const refusal = await post("/auth/otp/verify", { phone: unused(), code: "123456" });
+
+    expect(refusal.status).toBe(401);
   });
 });
 
