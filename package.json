@@ -16,7 +16,7 @@
     "start": "node --env-file=.env --experimental-strip-types src/server.ts",
     "build:lambda": "node scripts/build-lambda.mjs",
     "backup": "node --experimental-strip-types --env-file=.env src/db/backup.ts",
-    "backup:dump": "./scripts/backup-local.sh"
+    "e2e:prepare": "node --experimental-strip-types --env-file=.env src/db/prepare-e2e.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",
