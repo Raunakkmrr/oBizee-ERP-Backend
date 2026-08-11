@@ -106,6 +106,35 @@ contractRoutes.get("/", requirePermission("contract:read"), async (c) => {
     : [];
   const doneBySchedule = new Map(done.map((r) => [r.scheduleId, Number(r.n)]));
 
+  /*
+    Which visits are already jobs — FR-502's idempotency keys.
+
+    The screen used to answer this by reading the *Today board*, which returns
+    only jobs scheduled for today. Visits are generated ninety days ahead, so
+    the board could almost never see them: every contract read "none on the
+    board yet" however many times somebody had pressed the button, and offered
+    to generate them again. Harmless — `jobs_tenant_visitkey_uq` refuses the
+    duplicate — but the control never acknowledged the work, which is its own
+    kind of broken.
+
+    The contract knows its own visits. It answers for them here.
+  */
+  const generated = ids.length
+    ? await db
+        .select({ visitKey: jobs.visitKey, scheduleId: jobs.contractScheduleId })
+        .from(jobs)
+        .innerJoin(contractSchedules, eq(jobs.contractScheduleId, contractSchedules.id))
+        .where(and(eq(jobs.tenantId, tenantId), inArray(contractSchedules.contractId, ids)))
+    : [];
+  const keysByContract = new Map<string, string[]>();
+  const scheduleToContract = new Map(schedules.map((s) => [s.id, s.contractId]));
+  for (const row of generated) {
+    if (!row.visitKey || !row.scheduleId) continue;
+    const contractId = scheduleToContract.get(row.scheduleId);
+    if (!contractId) continue;
+    keysByContract.set(contractId, [...(keysByContract.get(contractId) ?? []), row.visitKey]);
+  }
+
   const today = new Date();
 
   return c.json({
@@ -132,6 +161,8 @@ contractRoutes.get("/", requirePermission("contract:read"), async (c) => {
         daysRemaining: daysBetween(today, end),
         status: contract.status,
         reschedulePolicy: contract.reschedulePolicy,
+        /** The visits already raised as jobs, so the screen need not guess. */
+        visitsOnBoard: keysByContract.get(contract.id) ?? [],
         schedules: schedules
           .filter((s) => s.contractId === contract.id)
           .map((s) => ({
