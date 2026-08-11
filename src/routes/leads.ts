@@ -281,7 +281,16 @@ leadRoutes.get("/lookup", requirePermission("lead:read"), async (c) => {
         // Unassigned is a real state and the screen says so, rather than
         // printing nothing and leaving the coordinator to guess who to ask.
         owner: row.lead_owner ?? "Unassigned",
-        nextFollowUp: row.lead_next ?? "",
+        /*
+          A phrase, not a timestamp. This returned the raw column and the panel
+          printed `2026-08-11 13:43:10.147+00` at a coordinator mid-call — a
+          database value on the one screen that exists to be read in seconds
+          while somebody is talking. The queue already words dates this way;
+          the same wording belongs here.
+        */
+        nextFollowUp: row.lead_next
+          ? groupOf(row.lead_id ? "assigned" : null, new Date(row.lead_next), new Date()).dueWord
+          : "No date",
       },
     });
   }
