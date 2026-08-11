@@ -1,5 +1,5 @@
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, or } from "drizzle-orm";
 import { adminDb as db } from "../db/client.ts";
 import { otpChallenges, refreshTokens, users } from "../db/schema.ts";
 import { issueAccessToken, type Caller } from "./context.ts";
@@ -65,6 +65,14 @@ export async function requestOtp(
   if (!user || !user.active) return;
 
   const code = await sender.send(phoneE164);
+  /*
+    Expired challenges, gone. All 121 in the development database were expired
+    and none had ever been removed; the attempt counter that matters lives in
+    `rate_limits`, so a spent challenge carries nothing worth keeping. Scoped to
+    the number being asked about, on a request that was already writing.
+  */
+  await db.delete(otpChallenges).where(lt(otpChallenges.expiresAt, new Date()));
+
   await db.insert(otpChallenges).values({
     phoneE164,
     userId: user.id,
@@ -157,6 +165,37 @@ async function issueFor(userId: string): Promise<SignInResult> {
     tokenHash: hashCode(refresh),
     expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
   });
+
+  /*
+    Sweep this user's dead tokens, here rather than on a schedule.
+
+    Nothing pruned this table and it only grew: 1,282 rows in three days of
+    development, 422 of them revoked and none ever removed, because the
+    thirty-day TTL means the first one does not expire until a month in. Every
+    cold page load rotates a token — a bookmark, a refresh, the first open of
+    the morning — so a dozen people at twenty page loads a day is some seven
+    thousand rows a month, on a plan with half a gigabyte.
+
+    Opportunistic and scoped to one user, so it is a handful of rows on a
+    request that was already writing. A scheduled sweep would be a second thing
+    to deploy, keep alive and notice the failure of.
+
+    **Revoked tokens are kept for a week rather than deleted at once.** A stolen
+    token presented after the real one has rotated arrives as a revoked token,
+    which is the only reliable signal a session was lifted — deleting it on
+    rotation makes that indistinguishable from a token that never existed. The
+    window is what keeps the signal available for as long as anybody could act
+    on it.
+  */
+  const week = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  await db
+    .delete(refreshTokens)
+    .where(
+      and(
+        eq(refreshTokens.userId, user.id),
+        or(lt(refreshTokens.revokedAt, week), lt(refreshTokens.expiresAt, week)),
+      ),
+    );
 
   return {
     kind: "ok",
