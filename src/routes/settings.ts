@@ -11,12 +11,52 @@ import { z } from "zod";
 
 import { requirePermission } from "../auth/context.ts";
 import { db } from "../db/client.ts";
-import { advances, auditEntries, branches, invoices, jobs, seriesCounters } from "../db/schema.ts";
+import { advances, auditEntries, branches, invoices, jobs, seriesCounters, tenants } from "../db/schema.ts";
 import { apiRouter } from "../lib/router.ts";
 import { financialYear } from "../lib/series.ts";
 import { zQuery } from "../lib/validate.ts";
 
 export const settingsRoutes = apiRouter();
+
+/**
+ * Who this firm is, for the top of a printed document.
+ *
+ * The name and GSTIN were in the database from the first migration and no
+ * endpoint returned them, so anything printed had no letterhead — a job card
+ * handed to a customer at their door, with no firm on it, is a loose sheet of
+ * paper. The invoice print will want exactly the same three facts.
+ *
+ * Under `settings:read` rather than open, because the GSTIN is the firm's own
+ * registration and belongs to the office. The card falls back to the job's own
+ * content when a caller may not read it, rather than failing to print.
+ */
+settingsRoutes.get("/profile", requirePermission("settings:read"), async (c) => {
+  const { tenantId } = c.get("caller");
+
+  const [firm] = await db
+    .select({ businessName: tenants.businessName, legalName: tenants.legalName })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+
+  if (!firm) return c.json({ error: "No such firm" }, 404);
+
+  /*
+    One branch at launch (FR-1303), but the column has existed from day one, so
+    this reads the first rather than assuming there is only ever one.
+  */
+  const [branch] = await db
+    .select({ name: branches.name, gstin: branches.gstin, stateCode: branches.stateCode })
+    .from(branches)
+    .where(eq(branches.tenantId, tenantId))
+    .limit(1);
+
+  return c.json({
+    businessName: firm.businessName,
+    legalName: firm.legalName,
+    branch: branch ?? null,
+  });
+});
 
 /**
  * What each counter believes, and what the documents say.
