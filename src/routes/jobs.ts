@@ -111,6 +111,28 @@ function filterPredicate(filter: (typeof FILTERS)[number]) {
 }
 
 /**
+ * How close a word has to be to count as the word somebody meant.
+ *
+ * **Measured, not chosen.** `similarity()` compares the query against the
+ * *whole* string, so a short query is diluted by the words it does not mention:
+ * `Nidi` against `Nidhi Singh` scores 0.214 and misses the 0.3 default outright,
+ * while `Shakit` against `Shakti Industries` scores 0.190. Both are exactly the
+ * typo the fuzzy match exists to absorb.
+ *
+ * `word_similarity()` compares the query against the best-matching *word* in
+ * the target, which is the question actually being asked — "is this one of the
+ * words in that name?" The same two score 0.600 and 0.571.
+ *
+ * 0.5 is where every real misspelling in the register passes and nothing
+ * unrelated does. Measured across the customer list: Nidi→Nidhi Singh, Shakit→
+ * Shakti Industries, Nandni→Nandini Foods, Grean→Green Park, Sunris→Sunrise
+ * all match; `zzz`, `Verma` and `Kapoor` match nothing. Raising it to Postgres'
+ * 0.6 default drops Shakit and Nandni; lowering it to 0.4 starts pulling in
+ * names that merely share a syllable.
+ */
+const WORD_MATCH = 0.5;
+
+/**
  * What the search looks at, and why each one is on the list.
  *
  * `q` reaches this having been typed by somebody with a customer on the line,
@@ -139,9 +161,22 @@ function searchPredicate(raw: string) {
     ilike(customers.name, like),
     ilike(sites.locality, like),
     ilike(technician.name, like),
-    // `%` is pg_trgm's similarity operator, and the one the GIN indexes serve.
-    sql`${customers.name} % ${raw}`,
-    sql`${technician.name} % ${raw}`,
+    /*
+      The fuzzy half, written as an explicit comparison rather than the `<%`
+      operator.
+
+      `<%` reads its threshold from `pg_trgm.word_similarity_threshold`, a
+      session GUC — and this connection is the Neon HTTP driver, where every
+      statement is its own round trip and the only thing riding along is the
+      tenant `set_config` the client shim sends. A threshold set in one request
+      would not be there for the next. Naming the number in the predicate makes
+      it true regardless of session state, which is worth more here than the
+      index the operator would have used.
+    */
+    sql`word_similarity(${raw}, ${customers.name}) >= ${WORD_MATCH}`,
+    sql`word_similarity(${raw}, coalesce(${technician.name}, '')) >= ${WORD_MATCH}`,
+    sql`word_similarity(${raw}, ${jobs.serviceType}) >= ${WORD_MATCH}`,
+    sql`word_similarity(${raw}, coalesce(${sites.locality}, '')) >= ${WORD_MATCH}`,
   ];
 
   /*
@@ -178,10 +213,11 @@ function searchPredicate(raw: string) {
  */
 function searchRank(raw: string) {
   return sql`greatest(
-    similarity(${customers.name}, ${raw}),
-    similarity(coalesce(${technician.name}, ''), ${raw}),
-    similarity(${jobs.jobNumber}, ${raw}),
-    similarity(${jobs.serviceType}, ${raw})
+    word_similarity(${raw}, ${customers.name}),
+    word_similarity(${raw}, coalesce(${technician.name}, '')),
+    word_similarity(${raw}, ${jobs.jobNumber}),
+    word_similarity(${raw}, ${jobs.serviceType}),
+    word_similarity(${raw}, coalesce(${sites.locality}, ''))
   )`;
 }
 
