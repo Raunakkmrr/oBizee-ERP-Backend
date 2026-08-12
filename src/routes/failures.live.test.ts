@@ -420,6 +420,18 @@ describe.skipIf(!reachable)("how the API refuses", () => {
       // Enforced by the API, not by a screen that a client could walk past.
       expect((await fetch(`${BASE}/api/customers`, { headers: asThem })).status).toBe(403);
 
+
+      expect((await post("/api/me/password", { currentPassword: given, newPassword: "short" }, asThem)).status).toBe(400);
+      expect((await post("/api/me/password", { currentPassword: "not-the-one", newPassword: "a-long-enough-one" }, asThem)).status).toBe(401);
+
+      const changed = (await (
+        await post("/api/me/password", { currentPassword: given, newPassword: "chosen-by-me-2026" }, asThem)
+      ).json()) as { accessToken: string };
+
+      // Fresh tokens, or they stay locked out having just complied.
+      expect((await fetch(`${BASE}/api/customers`, { headers: { Authorization: `Bearer ${changed.accessToken}` } })).status).toBe(200);
+      expect((await post("/auth/password", { email, password: given })).status).toBe(401);
+
       /*
         **Put the probe back.**
 
@@ -434,17 +446,6 @@ describe.skipIf(!reachable)("how the API refuses", () => {
         revoke access, which is also exactly what the product does to a leaver.
       */
       await post(`/api/people/${probe.id}/active`, { active: false }, auth);
-
-      expect((await post("/api/me/password", { currentPassword: given, newPassword: "short" }, asThem)).status).toBe(400);
-      expect((await post("/api/me/password", { currentPassword: "not-the-one", newPassword: "a-long-enough-one" }, asThem)).status).toBe(401);
-
-      const changed = (await (
-        await post("/api/me/password", { currentPassword: given, newPassword: "chosen-by-me-2026" }, asThem)
-      ).json()) as { accessToken: string };
-
-      // Fresh tokens, or they stay locked out having just complied.
-      expect((await fetch(`${BASE}/api/customers`, { headers: { Authorization: `Bearer ${changed.accessToken}` } })).status).toBe(200);
-      expect((await post("/auth/password", { email, password: given })).status).toBe(401);
     });
 
     it("revokes the refresh token on sign-out", async () => {
