@@ -11,7 +11,7 @@
  * billable is decided by coverage alone, and the technician needs to know that
  * *while* logging the part, not when the office raises the invoice.
  */
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, ne } from "drizzle-orm";
 
 import { PRICE_FIELDS, stripFields } from "../auth/context.ts";
 import { can } from "../auth/roles.ts";
@@ -123,10 +123,24 @@ jobDetailRoutes.get("/:id", async (c) => {
         .from(signOffs)
         .where(and(eq(signOffs.tenantId, caller.tenantId), eq(signOffs.jobId, id)))
         .limit(1),
+      /*
+        The id as well as the number, so the screen can reach the document.
+
+        Only the number was selected, so a billed job could at best print a
+        string — and in fact printed nothing, because nothing rendered it. A
+        cancelled bill is excluded: it is not the invoice this job became, and
+        linking to it would send somebody to a document that charges nobody.
+      */
       db
-        .select({ number: invoices.number })
+        .select({ id: invoices.id, number: invoices.number, status: invoices.status })
         .from(invoices)
-        .where(and(eq(invoices.tenantId, caller.tenantId), eq(invoices.jobId, id)))
+        .where(
+          and(
+            eq(invoices.tenantId, caller.tenantId),
+            eq(invoices.jobId, id),
+            ne(invoices.status, "CANCELLED"),
+          ),
+        )
         .limit(1),
       row.job.contractScheduleId
         ? db
@@ -275,6 +289,9 @@ jobDetailRoutes.get("/:id", async (c) => {
       : null,
 
     invoiceNumber: invoice[0]?.number ?? null,
+    /** Present the moment a draft exists, so the screen can offer the copy. */
+    invoiceId: invoice[0]?.id ?? null,
+    invoiceStatus: invoice[0]?.status ?? null,
   };
 
   // FR-1302: the price is absent for a role that may not see it, not blanked.
