@@ -14,7 +14,8 @@ import { db } from "../db/client.ts";
 import { advances, auditEntries, branches, invoices, jobs, seriesCounters, tenants } from "../db/schema.ts";
 import { apiRouter } from "../lib/router.ts";
 import { financialYear } from "../lib/series.ts";
-import { zQuery } from "../lib/validate.ts";
+import { audit } from "../lib/audit.ts";
+import { zBody, zQuery } from "../lib/validate.ts";
 
 export const settingsRoutes = apiRouter();
 
@@ -66,6 +67,73 @@ settingsRoutes.get("/profile", requirePermission("settings:read"), async (c) => 
  * drawn and never used — a gap somebody will be asked about. Reporting only
  * the counter would hide exactly that.
  */
+/**
+ * Change the firm's own name.
+ *
+ * **Nothing could.** `update(tenants)` appeared nowhere in the API, so a firm
+ * carried whatever name it was created with for ever — and every document it
+ * printed carried that name too. An invoice is issued *by* somebody; getting
+ * that wrong is not a cosmetic defect, it is the wrong supplier on a tax
+ * document.
+ *
+ * `settings:write`, which only an owner holds. The trading name and the legal
+ * name are separate fields because they are separate things: the legal name is
+ * what a tax invoice must carry, the trading name is what a customer
+ * recognises, and plenty of Indian firms differ on the two.
+ *
+ * The GSTIN is deliberately **not** here. It encodes the entity's PAN and is
+ * issued by the department, not chosen — a screen that let somebody type a new
+ * one would be a screen for putting a false registration on an invoice. It
+ * moves with a branch, under its own route, when that is built.
+ */
+settingsRoutes.patch(
+  "/profile",
+  requirePermission("settings:write"),
+  zBody(
+    z.object({
+      businessName: z.string().trim().min(2).max(120).optional(),
+      legalName: z.string().trim().min(2).max(160).optional(),
+    }).refine((v) => v.businessName !== undefined || v.legalName !== undefined, {
+      message: "Give a trading name, a legal name, or both",
+    }),
+  ),
+  async (c) => {
+    const caller = c.get("caller");
+    const body = c.req.valid("json");
+
+    const [before] = await db
+      .select({ businessName: tenants.businessName, legalName: tenants.legalName })
+      .from(tenants)
+      .where(eq(tenants.id, caller.tenantId))
+      .limit(1);
+
+    if (!before) return c.json({ error: "No such firm" }, 404);
+
+    const [updated] = await db
+      .update(tenants)
+      .set({
+        businessName: body.businessName ?? before.businessName,
+        legalName: body.legalName ?? before.legalName,
+      })
+      .where(eq(tenants.id, caller.tenantId))
+      .returning({ businessName: tenants.businessName, legalName: tenants.legalName });
+
+    /*
+      FR-1305. Renaming the firm changes the supplier printed on every invoice
+      raised afterwards, so the trail records both sides of the change — "who
+      changed what" is uninteresting here without the what it changed from.
+    */
+    await audit(
+      caller,
+      "RENAME_FIRM",
+      `Renamed the firm from ${before.legalName} to ${updated!.legalName}`,
+      { table: "tenants", id: caller.tenantId },
+    );
+
+    return c.json(updated);
+  },
+);
+
 settingsRoutes.get("/numbering", requirePermission("settings:read"), async (c) => {
   const { tenantId } = c.get("caller");
   const year = financialYear(new Date());
