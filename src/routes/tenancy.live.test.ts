@@ -122,11 +122,26 @@ describe.skipIf(!reachable)("one firm cannot reach another's records", () => {
     mine = await asOwner("sunita@vermacooling.test", "other-firm-2026");
     theirs = await asOwner("manish@shakticooling.test", "obizee-dev-2026");
 
+    /*
+      Found through the owner who signed in, not through a display name.
+
+      This looked the tenant up by `legalName = "Shakti Cooling Systems Pvt
+      Ltd"`. That is a field the product can now edit — renaming the firm is a
+      supported action, and the first real rename broke this suite. A test that
+      pins a tenant by a string a user is allowed to change is asserting on the
+      wrong thing; the owner's account is what actually identifies the firm
+      here, and it is what the sign-in above already proved.
+    */
+    const [owner] = await db
+      .select({ tenantId: users.tenantId })
+      .from(users)
+      .where(eq(users.email, "manish@shakticooling.test"))
+      .limit(1);
+
     const [seeded] = await db
       .select({ id: customers.id })
       .from(customers)
-      .innerJoin(tenants, eq(customers.tenantId, tenants.id))
-      .where(eq(tenants.legalName, "Shakti Cooling Systems Pvt Ltd"))
+      .where(eq(customers.tenantId, owner!.tenantId))
       .limit(1);
     theirCustomerId = seeded!.id;
   });
