@@ -10,6 +10,7 @@ import {
   jobEvents,
   jobHelpers,
   jobs,
+  signOffs,
   sites,
   users,
 } from "../db/schema.ts";
@@ -634,6 +635,108 @@ const NEXT: Record<string, readonly string[]> = {
   SIGNED_OFF: [],
   CANCELLED: [],
 };
+
+/**
+ * Record that the customer signed for the work — FR-1201, FR-1202.
+ *
+ * **Nothing wrote to `sign_offs`.** The table was read in three places and
+ * written in none, so a job could reach `SIGNED_OFF` with no signature behind
+ * it — which is exactly what happened: two jobs in the register badged "Signed
+ * off" while the sign-off panel on the same screen said nobody had signed. The
+ * status and the record disagreed because only one of them existed.
+ *
+ * **The transition happens here, and only here.** Moving to `SIGNED_OFF` is not
+ * a state change somebody should be able to make on its own — it is the
+ * consequence of a signature. Writing the record and moving the status in one
+ * request is what stops the two drifting apart again.
+ *
+ * **`origin` is honest about which this was.** §6.9 specifies the customer
+ * signing on the technician's device; that surface does not exist yet, so what
+ * the office can record is a *reported* sign-off — the technician rang in, or
+ * the customer confirmed on WhatsApp. FR-1204 already anticipates that path.
+ * Storing it as though a finger had touched glass would put a claim on the
+ * record that nobody made, so it is named.
+ */
+jobRoutes.post(
+  "/:id/sign-off",
+  requirePermission("job:write"),
+  zBody(
+    z.object({
+      signerName: z.string().trim().min(2).max(120),
+      /** FR-1202 — words on the screen, a number in the register. */
+      rating: z.number().int().min(1).max(5),
+      comment: z.string().trim().max(500).optional(),
+      origin: z.enum(["reported_by_office", "signed_on_device"]).default("reported_by_office"),
+      /** When the customer actually signed, not when the office typed it in. */
+      signedAt: z.string().datetime().optional(),
+    }),
+  ),
+  async (c) => {
+    const caller = c.get("caller");
+    const id = c.req.param("id");
+    const body = c.req.valid("json");
+
+    const [job] = await db
+      .select({ id: jobs.id, jobNumber: jobs.jobNumber, status: jobs.status })
+      .from(jobs)
+      .where(and(eq(jobs.id, id), eq(jobs.tenantId, caller.tenantId)))
+      .limit(1);
+    if (!job) return c.json({ error: "No such job" }, 404);
+
+    /*
+      The same table the transition route enforces. A job that has not reached
+      WORK_DONE has not been done, and a signature against it would be a
+      customer signing for work nobody has reported finishing.
+    */
+    if (job.status !== "WORK_DONE") {
+      return c.json(
+        {
+          error: `A job cannot be signed off from ${job.status}`,
+          allowed: NEXT[job.status] ?? [],
+        },
+        409,
+      );
+    }
+
+    const signedAt = body.signedAt ? new Date(body.signedAt) : new Date();
+
+    await db.insert(signOffs).values({
+      jobId: job.id,
+      tenantId: caller.tenantId,
+      signerName: body.signerName,
+      signedAt,
+      rating: body.rating,
+      comment: body.comment ?? null,
+      // No image until §6.9's capture surface exists. Saying `true` here would
+      // promise a signature somebody could be asked to produce.
+      signatureUploaded: false,
+    });
+
+    await db
+      .update(jobs)
+      .set({ status: "SIGNED_OFF" })
+      .where(and(eq(jobs.id, job.id), eq(jobs.tenantId, caller.tenantId)));
+
+    await db.insert(jobEvents).values({
+      tenantId: caller.tenantId,
+      jobId: job.id,
+      actorUserId: caller.userId,
+      label: "SIGNED_OFF",
+      occurredAt: signedAt,
+      offline: false,
+    });
+
+    await audit(
+      caller,
+      "RECORD_SIGN_OFF",
+      `${body.signerName} signed off ${job.jobNumber}` +
+        (body.origin === "reported_by_office" ? " — reported to the office" : ""),
+      { table: "jobs", id: job.id },
+    );
+
+    return c.json({ id: job.id, status: "SIGNED_OFF", signerName: body.signerName });
+  },
+);
 
 jobRoutes.post(
   "/:id/transition",
