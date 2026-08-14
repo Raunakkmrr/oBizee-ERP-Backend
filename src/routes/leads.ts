@@ -4,6 +4,7 @@ import { and, asc, count, desc, eq, inArray, isNull, notInArray, sql } from "dri
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "../db/client.ts";
 import {
+  branches,
   contacts,
   customers,
   invoices,
@@ -319,6 +320,21 @@ const newLead = z.object({
   /** FR-104 — required, and in the future. */
   nextFollowUpAt: z.string().datetime(),
   ownerUserId: z.string().uuid().nullable().optional(),
+  takenByUserId: z.string().uuid().nullable().optional(),
+  /*
+    What the call actually gathered.
+
+    The capture form asked for all of this and sent none of it — the body took
+    five fields and the screen collected eleven, so the service somebody rang
+    about, the address, and the note recording what they said were discarded at
+    the moment of saving.
+  */
+  serviceType: z.string().trim().max(120).optional(),
+  note: z.string().trim().max(1000).optional(),
+  pincode: z.string().regex(/^[1-8][0-9]{5}$/).optional(),
+  city: z.string().trim().max(120).optional(),
+  stateCode: z.string().regex(/^[0-9]{2}$/).optional(),
+  landmark: z.string().trim().max(200).optional(),
 });
 
 leadRoutes.post(
@@ -341,13 +357,37 @@ leadRoutes.post(
       return c.json({ error: "The follow-up date must be in the future" }, 400);
     }
 
-    const [counted] = await db
-      .select({ value: count() })
-      .from(leads)
-      .where(eq(leads.tenantId, caller.tenantId));
+    /*
+      **Counted rows, against a unique constraint.**
 
-    const sequence = Number(counted?.value ?? 0) + 1;
+      This was `count() + 1`, so four leads always produced `L-2608-0005`. The
+      moment that reference existed — a lead removed, a gap in the seed, two
+      people saving at once — every later creation collided and answered 409
+      for ever. Not intermittent: unrecoverable without editing the database.
+
+      Jobs and invoices have always numbered themselves through
+      `next_in_series`, a counter table with a row lock, precisely so a gap
+      cannot become a permanent collision. Leads now use the same one rather
+      than a second, worse mechanism sitting beside it.
+    */
     const now = new Date();
+    /*
+      A marketer may have no branch on their account — leads are taken on a
+      phone, not at a counter — so the counter falls back to the tenant's first
+      branch rather than refusing to number the lead.
+    */
+    const branchId =
+      caller.branchId ??
+      (
+        await db
+          .select({ id: branches.id })
+          .from(branches)
+          .where(eq(branches.tenantId, caller.tenantId))
+          .limit(1)
+      )[0]?.id;
+    if (!branchId) return c.json({ error: "No branch on file" }, 400);
+
+    const sequence = await nextInSeries(caller.tenantId, branchId, "lead", now);
     const reference = `L-${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, "0")}-${String(sequence).padStart(4, "0")}`;
 
     const [lead] = await db
@@ -360,6 +400,12 @@ leadRoutes.post(
         locality: body.locality ?? null,
         source: body.source,
         quotedPaise: body.quotedPaise ?? null,
+        serviceType: body.serviceType ?? null,
+        note: body.note ?? null,
+        pincode: body.pincode ?? null,
+        city: body.city ?? null,
+        stateCode: body.stateCode ?? null,
+        landmark: body.landmark ?? null,
         nextFollowUpAt: new Date(body.nextFollowUpAt),
         // FR-103: whoever captured it earns the incentive, and it never moves.
         takenByUserId: caller.userId,

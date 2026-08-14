@@ -222,6 +222,24 @@ export const leads = pgTable(
     takenByUserId: uuid("taken_by_user_id").references(() => users.id),
     ownerUserId: uuid("owner_user_id").references(() => users.id),
     quotedPaise: money("quoted_paise"),
+    /**
+     * What the calls actually gathered.
+     *
+     * The capture form asked for every one of these and the table could hold
+     * none, so `createLead` sent five fields and dropped the rest. A lead
+     * worked over three or four calls is made of these details; discarding
+     * them is why the address had to be asked for a second time at conversion.
+     *
+     * All nullable — FR-101 gives capture thirty seconds, and most of this
+     * arrives on the calls after the first.
+     */
+    serviceType: text("service_type"),
+    note: text("note"),
+    pincode: text("pincode"),
+    city: text("city"),
+    /** FR-802 — decides the tax head on every invoice the customer ever gets. */
+    stateCode: text("state_code"),
+    landmark: text("landmark"),
     /** FR-104: a lead with no next date gets forgotten, so this is required. */
     nextFollowUpAt: timestamp("next_follow_up_at", { withTimezone: true }),
     /** Set when the lead becomes a customer, so conversion is traceable. */

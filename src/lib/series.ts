@@ -13,7 +13,14 @@ import { db } from "../db/client.ts";
  * app said outright that a shared statutory sequence needs the backend. This is
  * that backend.
  */
-export type DocType = "job" | "invoice" | "receipt_voucher";
+/**
+ * `lead` joined the others because leads were numbering themselves by counting
+ * rows — which collides for ever the first time a reference is reused. A lead
+ * reference is not statutory the way an invoice number is, but it is spoken
+ * aloud and typed into a search box, so it wants the same guarantee of being
+ * unique and consecutive.
+ */
+export type DocType = "job" | "invoice" | "receipt_voucher" | "lead";
 
 /** 1 April boundary — 2026 means the 2026-27 financial year. */
 export function financialYear(on: Date): number {

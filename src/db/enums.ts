@@ -112,7 +112,7 @@ export const tdsSectionEnum = pgEnum("tds_section", ["194C", "194J", "NONE"]);
 export const purchaseStatusEnum = pgEnum("purchase_status", ["UNPAID", "PAID"]);
 
 /** FR-811: each document type gets its own counter per branch per financial year. */
-export const docTypeEnum = pgEnum("doc_type", ["job", "invoice", "receipt_voucher"]);
+export const docTypeEnum = pgEnum("doc_type", ["job", "invoice", "receipt_voucher", "lead"]);
 
 /** FR-1305: an entry written by the technician app carries where it happened. */
 export const auditOriginEnum = pgEnum("audit_origin", ["web", "offline_sync"]);
