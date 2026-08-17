@@ -562,6 +562,35 @@ leadRoutes.post(
       })
       .returning();
 
+    /*
+      Who to ring, carried across from the lead.
+
+      A lead *is* a name and a phone number — it is the only thing FR-101 makes
+      mandatory, and by conversion somebody has usually rung it three or four
+      times. Conversion wrote the customer and the site and dropped it, so every
+      converted customer arrived with a site nobody could be called about: the
+      job card printed "No contact on file for this site" and the technician
+      turned up at a shuttered restaurant with no number to try.
+
+      Guarded on the number normalising, because a contact row whose phone is
+      the empty string is the same silence wearing a name.
+    */
+    const phone = lead.phoneE164 ? e164(lead.phoneE164) : null;
+    if (phone) {
+      await db.insert(contacts).values({
+        tenantId: caller.tenantId,
+        siteId: site!.id,
+        name: lead.name,
+        phoneE164: phone,
+        whatsappE164: phone,
+        // The lead never recorded what they do there, and the column has no
+        // "unknown", so the honest option is the one that claims least.
+        roleLabel: "OTHER",
+        // The only contact, so unambiguously the one to ring.
+        isPrimary: true,
+      });
+    }
+
     // Conversion implies the lead is won, so it is recorded here rather than
     // asked for again on the next screen.
     await db
