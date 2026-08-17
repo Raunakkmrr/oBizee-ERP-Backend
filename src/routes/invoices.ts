@@ -312,6 +312,34 @@ invoiceRoutes.get("/:id", requirePermission("invoice:read"), async (c) => {
     job actually said. An invoice review screen showing another job's signature
     is worse than showing none — it is evidence for a different bill.
   */
+  /*
+    What has been received against it, and what is still owed.
+
+    Neither was on the payload, so no screen could say whether an issued
+    invoice had been paid — and the one mutation that records a payment was
+    called by nothing. A firm could raise a bill and had no way to mark it
+    settled, which makes the receivables figure a number that only ever grows.
+
+    Derived, never stored: FR-901 treats partial payment as normal, so an
+    invoice carries many payments and its balance is the arithmetic. A status
+    field somebody has to remember to flip is the version that goes wrong.
+  */
+  const received = await db
+    .select({
+      id: payments.id,
+      receivedOn: payments.receivedOn,
+      amountPaise: payments.amountPaise,
+      method: payments.method,
+      reference: payments.reference,
+      recordedBy: users.name,
+    })
+    .from(payments)
+    .leftJoin(users, eq(payments.recordedByUserId, users.id))
+    .where(and(eq(payments.tenantId, tenantId), eq(payments.invoiceId, row.invoice.id)))
+    .orderBy(asc(payments.receivedOn));
+
+  const paidPaise = received.reduce((sum, p) => sum + p.amountPaise, 0);
+
   const [signOff] = row.jobId
     ? await db
         .select({
@@ -358,6 +386,23 @@ invoiceRoutes.get("/:id", requirePermission("invoice:read"), async (c) => {
       year: "numeric",
     }),
     lines,
+    paidPaise,
+    /* Clamped at zero — an overpaid invoice is a credit note nobody raised,
+       and the write path refuses one, so a negative here would be a bug
+       reported as a number. */
+    outstandingPaise: Math.max(0, row.invoice.grandTotalPaise - paidPaise),
+    payments: received.map((p) => ({
+      id: p.id,
+      amountPaise: p.amountPaise,
+      method: p.method,
+      reference: p.reference,
+      recordedBy: p.recordedBy,
+      dateWord: new Date(`${p.receivedOn}T00:00:00`).toLocaleDateString("en-IN", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      }),
+    })),
   });
 });
 
