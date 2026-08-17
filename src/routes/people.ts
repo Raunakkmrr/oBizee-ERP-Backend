@@ -76,7 +76,7 @@ const person = personFields
     path: ["phone"],
   });
 
-peopleRoutes.get("/", requirePermission("people:manage"), async (c) => {
+peopleRoutes.get("/", requirePermission("people:read"), async (c) => {
   const { tenantId } = c.get("caller");
 
   const rows = await db

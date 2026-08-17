@@ -98,6 +98,21 @@ export const PERMISSIONS = [
   "report:technician_performance",
   "settings:read",
   "settings:write",
+  /**
+   * Seeing who works here, as distinct from deciding who works here.
+   *
+   * These were one permission, and the one was `people:manage` — owner only.
+   * That made `GET /api/people` refuse a coordinator, which is the person whose
+   * entire job is putting a name against a job: the technician picker fetched
+   * the bench, got a 403, and rendered "No technicians on the strength yet".
+   * Dispatch was impossible for the only role meant to do it, and the screen
+   * blamed an empty team rather than the refusal.
+   *
+   * So reading the bench is its own permission. Adding a colleague, changing a
+   * role or deactivating an account stay behind `people:manage`, because those
+   * are how somebody grants themselves authority.
+   */
+  "people:read",
   "people:manage",
   "audit:read",
 ] as const;
@@ -124,6 +139,8 @@ const MATRIX: Record<Role, readonly Permission[]> = {
     "job:read",
     "job:write",
     "job:dispatch",
+    // Dispatch is choosing a person, so the bench has to be readable.
+    "people:read",
     "customer:read",
     "customer:write",
     "contract:read",

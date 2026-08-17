@@ -247,7 +247,7 @@ describe.skipIf(!reachable)("how the API refuses", () => {
       return auth;
     }
 
-    it("is owner only", async () => {
+    it("lets a coordinator read the bench but not change it", async () => {
       const res = await fetch(`${BASE}/auth/password`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -256,8 +256,18 @@ describe.skipIf(!reachable)("how the API refuses", () => {
       const { accessToken } = (await res.json()) as { accessToken: string };
       const asCoordinator = { Authorization: `Bearer ${accessToken}`, "content-type": "application/json" };
 
+      /*
+        Reading is dispatch; writing is hiring.
+
+        This asserted 403 on the read as well, which is what shipped: the
+        technician picker fetched the bench, was refused, and told the
+        coordinator "No technicians on the strength yet". The person whose whole
+        job is putting a name against a job could not see a single name. The
+        rule worth keeping is the second one.
+      */
+      expect((await fetch(`${BASE}/api/people`, { headers: asCoordinator })).status).toBe(200);
+
       // A coordinator who could add a user could add themselves an owner.
-      expect((await fetch(`${BASE}/api/people`, { headers: asCoordinator })).status).toBe(403);
       expect(
         (
           await fetch(`${BASE}/api/people`, {
