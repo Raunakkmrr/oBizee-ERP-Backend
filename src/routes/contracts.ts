@@ -318,6 +318,33 @@ contractRoutes.post(
     const start = new Date(`${contract.startDate}T00:00:00`);
     const created = [];
 
+    /*
+      What one visit is worth — but only when the visit is the thing being
+      billed.
+
+      Under `PER_VISIT` the invoice is raised against the job itself, so a job
+      with no value of its own left the biller with nothing to bill and the
+      screen fell back to a hardcoded ₹4,500: a ₹36,000 contract quietly
+      invoicing the wrong number, six times over.
+
+      Under every other frequency the money lives on the billing *period*, and
+      the period invoice already carries it. Putting a value on the visit as
+      well would offer the same rupees twice — once from the job, once from
+      Ready-to-bill — so those visits are deliberately left unpriced.
+
+      Divided across the year's visits from every schedule, because a contract
+      with a pest schedule and a rodent schedule sells both out of one annual
+      value.
+    */
+    const annualVisits = schedules.reduce(
+      (sum, s) => sum + VISITS_PER_YEAR[s.recurrence as Recurrence],
+      0,
+    );
+    const perVisitPaise =
+      contract.billing === "PER_VISIT" && annualVisits > 0
+        ? Math.round(contract.annualValuePaise / annualVisits)
+        : null;
+
     for (const schedule of schedules) {
       const planned = visitSchedule(
         schedule.id,
@@ -343,6 +370,7 @@ contractRoutes.post(
             visitNumber: visit.number,
             visitOf: visit.of,
             serviceType: schedule.scope,
+            valuePaise: perVisitPaise,
             scheduledDate: isoDay(visit.on),
             // A scheduled visit carries the slot promise, not a timestamp
             // nobody agreed to (FR-203).
