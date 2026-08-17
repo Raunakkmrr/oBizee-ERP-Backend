@@ -283,3 +283,89 @@ customerRoutes.post(
     return c.json({ ...customer, sites: [{ ...site, contacts: contact ? [contact] : [] }] }, 201);
   },
 );
+
+/**
+ * Adding somebody to ring at a site that already exists — FR-202.
+ *
+ * **Why this had to exist.** The customer screen has always warned "No contact
+ * recorded — nobody to call on arrival. Add a name and number before the next
+ * visit", and the product had nowhere to add one: the only route into the
+ * `contacts` table was the optional block on customer creation, so a site that
+ * arrived without a contact — every converted lead, until conversion learned to
+ * carry the number — stayed uncallable forever. A screen that instructs an
+ * action it does not offer is worse than one that says nothing.
+ *
+ * `customer:write`, the same permission that created the site. A coordinator
+ * ringing ahead is the person who discovers the number is missing, and sending
+ * them to find the owner is how it stays missing.
+ */
+const addContact = z.object({
+  name: z.string().trim().min(2).max(120),
+  phone: z
+    .string()
+    .trim()
+    .refine((v) => e164(v) !== null, {
+      message: "That does not look like an Indian mobile number",
+    }),
+  roleLabel: z
+    .enum(["OWNER", "SITE_INCHARGE", "TENANT", "SECURITY", "ACCOUNTS", "OTHER"])
+    .default("SITE_INCHARGE"),
+});
+
+customerRoutes.post(
+  "/:customerId/sites/:siteId/contacts",
+  requirePermission("customer:write"),
+  zBody(addContact),
+  async (c) => {
+    const caller = c.get("caller");
+    const { customerId, siteId } = c.req.param();
+    const body = c.req.valid("json");
+
+    /*
+      The site is checked against the caller's tenant *and* the customer in the
+      path. Trusting the site id alone would let a correct-looking request file
+      a contact under another firm's site, and trusting the customer id alone
+      would file it against the wrong site of the right customer.
+    */
+    const [site] = await db
+      .select({ id: sites.id })
+      .from(sites)
+      .where(
+        and(
+          eq(sites.id, siteId),
+          eq(sites.customerId, customerId),
+          eq(sites.tenantId, caller.tenantId),
+        ),
+      )
+      .limit(1);
+    if (!site) return c.json({ error: "No such site for that customer" }, 404);
+
+    const existing = await db
+      .select({ id: contacts.id })
+      .from(contacts)
+      .where(and(eq(contacts.siteId, siteId), eq(contacts.tenantId, caller.tenantId)));
+
+    const phone = e164(body.phone)!;
+    const [contact] = await db
+      .insert(contacts)
+      .values({
+        tenantId: caller.tenantId,
+        siteId,
+        name: body.name,
+        phoneE164: phone,
+        whatsappE164: phone,
+        roleLabel: body.roleLabel,
+        // First one in is the one to ring; later ones do not silently displace
+        // a primary somebody chose.
+        isPrimary: existing.length === 0,
+      })
+      .returning();
+
+    await audit(caller, "ADD_CONTACT", `Added ${body.name} as a contact for the site`, {
+      table: "contacts",
+      id: contact!.id,
+    });
+
+    return c.json(contact, 201);
+  },
+);
