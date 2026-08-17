@@ -11,7 +11,7 @@
  * billable is decided by coverage alone, and the technician needs to know that
  * *while* logging the part, not when the office raises the invoice.
  */
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, ne, sum } from "drizzle-orm";
 
 import { PRICE_FIELDS, stripFields } from "../auth/context.ts";
 import { can } from "../auth/roles.ts";
@@ -26,6 +26,7 @@ import {
   jobEvents,
   jobParts,
   jobs,
+  payments,
   signOffs,
   sites,
   users,
@@ -163,7 +164,13 @@ jobDetailRoutes.get("/:id", async (c) => {
         linking to it would send somebody to a document that charges nobody.
       */
       db
-        .select({ id: invoices.id, number: invoices.number, status: invoices.status })
+        .select({
+          id: invoices.id,
+          number: invoices.number,
+          status: invoices.status,
+          // For the derived balance below — there is no PAID status to read.
+          grandTotalPaise: invoices.grandTotalPaise,
+        })
         .from(invoices)
         .where(
           and(
@@ -190,6 +197,16 @@ jobDetailRoutes.get("/:id", async (c) => {
         .from(assets)
         .where(and(eq(assets.tenantId, caller.tenantId), eq(assets.siteId, row.job.siteId))),
     ]);
+
+  const [collected] = invoice[0]
+    ? await db
+        .select({ total: sum(payments.amountPaise) })
+        .from(payments)
+        .where(and(eq(payments.tenantId, caller.tenantId), eq(payments.invoiceId, invoice[0].id)))
+    : [];
+  const invoiceOutstanding = invoice[0]
+    ? Math.max(0, invoice[0].grandTotalPaise - Number(collected?.total ?? 0))
+    : null;
 
   /*
     The last transition into the state the job is in now — as a clock time, and
@@ -335,6 +352,17 @@ jobDetailRoutes.get("/:id", async (c) => {
     /** Present the moment a draft exists, so the screen can offer the copy. */
     invoiceId: invoice[0]?.id ?? null,
     invoiceStatus: invoice[0]?.status ?? null,
+    /*
+      What is still owed on it — derived, because there is no PAID status.
+
+      FR-901 makes the balance arithmetic over many payments rather than a flag,
+      which is right; the consequence is that a screen asking "is this settled?"
+      cannot read the status alone. Without this the job timeline announced
+      "Payment received — not yet" on an invoice that had been paid in full,
+      which is the same defect as claiming the invoice was still owed after it
+      was raised, one step further along.
+    */
+    invoiceOutstandingPaise: invoiceOutstanding,
   };
 
   // FR-1302: the price is absent for a role that may not see it, not blanked.
