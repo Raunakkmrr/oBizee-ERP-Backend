@@ -3,7 +3,7 @@ import { z } from "zod";
 import { and, asc, count, eq } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import {
-  branches, contracts, contractSchedules, customers, invoiceLines, invoices, jobs, payments, sites, tenants,
+  branches, contracts, contractSchedules, customers, invoiceLines, invoices, jobs, payments, signOffs, sites, tenants, users,
 } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
@@ -283,10 +283,15 @@ invoiceRoutes.get("/:id", requirePermission("invoice:read"), async (c) => {
       invoice: invoices,
       customer: customers.name,
       jobNumber: jobs.jobNumber,
+      jobId: jobs.id,
+      jobDate: jobs.scheduledDate,
+      jobService: jobs.serviceType,
+      technician: users.name,
     })
     .from(invoices)
     .innerJoin(customers, eq(invoices.customerId, customers.id))
     .leftJoin(jobs, eq(invoices.jobId, jobs.id))
+    .leftJoin(users, eq(jobs.primaryTechnicianId, users.id))
     .where(and(eq(invoices.id, c.req.param("id")), eq(invoices.tenantId, tenantId)))
     .limit(1);
   if (!row) return c.json({ error: "No such invoice" }, 404);
@@ -297,11 +302,51 @@ invoiceRoutes.get("/:id", requirePermission("invoice:read"), async (c) => {
     .where(eq(invoiceLines.invoiceId, row.invoice.id))
     .orderBy(asc(invoiceLines.position));
 
+  /*
+    The evidence behind the bill — §6.11.1's reason this screen exists at all,
+    so the accountant can bill without opening the job.
+
+    It was not on the payload, and the screen rendered a hardcoded visit
+    instead: every invoice in the product claimed it was for a gas top-up on
+    30 July by Ramesh Yadav, signed by Anil Joshi at four stars, whatever the
+    job actually said. An invoice review screen showing another job's signature
+    is worse than showing none — it is evidence for a different bill.
+  */
+  const [signOff] = row.jobId
+    ? await db
+        .select({
+          signerName: signOffs.signerName,
+          rating: signOffs.rating,
+          comment: signOffs.comment,
+        })
+        .from(signOffs)
+        .where(and(eq(signOffs.tenantId, tenantId), eq(signOffs.jobId, row.jobId)))
+        .limit(1)
+    : [];
+
   return c.json({
     ...row.invoice,
     customer: row.customer,
     // The job this settles, by the number a person reads (FR-210).
     jobNumber: row.jobNumber,
+    /* Null when the invoice is not against a job — an ad-hoc bill has no
+       visit, and the panel says so rather than inventing one. */
+    fromJob: row.jobNumber
+      ? {
+          dateWord: row.jobDate
+            ? new Date(`${row.jobDate}T00:00:00`).toLocaleDateString("en-IN", {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+              })
+            : null,
+          technician: row.technician,
+          serviceType: row.jobService,
+          signerName: signOff?.signerName ?? null,
+          rating: signOff?.rating ?? null,
+          comment: signOff?.comment ?? null,
+        }
+      : null,
     /*
       `12 Jun 2026`. Formatted here rather than on the screen because the same
       document is printed, exported and read aloud, and three places formatting
