@@ -52,6 +52,37 @@ function dayWord(at: Date | string | null): string | null {
 /** In-flight states have an elapsed time worth showing; finished ones do not. */
 const IN_FLIGHT = ["EN_ROUTE", "ON_SITE", "PARTS_AWAITED"];
 
+/**
+ * A stored event label, in words.
+ *
+ * Transitions used to be recorded as the bare enum, so the job history read
+ * `EN_ROUTE` / `ON_SITE` / `WORK_DONE` — a column of shouted constants in front
+ * of a coordinator and of whoever she turns the screen towards. The write side
+ * now stores the phrase; this covers everything written before it did,
+ * including the composite `EN_ROUTE — note` form.
+ *
+ * Anything unrecognised is passed through untouched, because most labels are
+ * already sentences ("Moved to 2026-10-15 9-1 — customer asked").
+ */
+const EVENT_WORD: Record<string, string> = {
+  CREATED: "Job created",
+  ASSIGNED: "Assigned to a technician",
+  EN_ROUTE: "On the way",
+  ON_SITE: "Arrived on site",
+  WORK_DONE: "Work finished",
+  PARTS_AWAITED: "Waiting on a part",
+  CUSTOMER_UNAVAILABLE: "Nobody at site",
+  SIGNED_OFF: "Customer signed off",
+  CANCELLED: "Cancelled",
+};
+
+function readableLabel(label: string): string {
+  const [head, ...rest] = label.split(" — ");
+  const word = head ? EVENT_WORD[head] : undefined;
+  if (!word) return label;
+  return rest.length > 0 ? `${word} — ${rest.join(" — ")}` : word;
+}
+
 /** `J-2608-0431` — the form a coordinator reads down the phone (FR-210). */
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -160,10 +191,18 @@ jobDetailRoutes.get("/:id", async (c) => {
         .where(and(eq(assets.tenantId, caller.tenantId), eq(assets.siteId, row.job.siteId))),
     ]);
 
-  // The last transition into the state the job is in now.
+  /*
+    The last transition into the state the job is in now — as a clock time, and
+    nothing else.
+
+    This used to answer `since 13:00`, and both screens that render it already
+    write the word themselves, so the job header read "En route since since
+    13:00". The word belongs to the sentence the screen is building; the field
+    is a time.
+  */
   const statusSince =
     IN_FLIGHT.includes(row.job.status) && events.length > 0
-      ? `since ${clockWord(events[0]!.occurredAt)}`
+      ? clockWord(events[0]!.occurredAt)
       : null;
 
   /*
@@ -260,7 +299,11 @@ jobDetailRoutes.get("/:id", async (c) => {
 
     timeline: events.map((ev) => ({
       id: ev.id,
-      label: ev.label,
+      // Read-side too, not only where events are written: every event recorded
+      // before the label carried words is still in the table, and a history
+      // that reads `EN_ROUTE` for last month and "On the way" for today is
+      // worse than either on its own.
+      label: readableLabel(ev.label),
       actor: ev.actor ?? "System",
       at: clockWord(ev.occurredAt),
       // §6.5.2: an event captured offline is normal, and says so plainly.

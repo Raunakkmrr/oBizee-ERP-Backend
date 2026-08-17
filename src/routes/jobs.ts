@@ -624,6 +624,32 @@ jobRoutes.post(
  * rather than "any status to any status": a job cannot jump from CREATED to
  * SIGNED_OFF, and the reason a state exists is that something happened.
  */
+/**
+ * What each state is called on a timeline somebody reads.
+ *
+ * The event label used to be the enum itself, so the job history read
+ * `EN_ROUTE`, `ON_SITE`, `WORK_DONE` — a column of shouted constants in front
+ * of a coordinator, and in front of whoever she shows the screen to. The status
+ * *value* stays the enum, because that is what the machine transitions on; this
+ * is only what the sentence says.
+ */
+const STATUS_WORD: Record<string, string> = {
+  CREATED: "Job created",
+  ASSIGNED: "Assigned to a technician",
+  EN_ROUTE: "On the way",
+  ON_SITE: "Arrived on site",
+  WORK_DONE: "Work finished",
+  PARTS_AWAITED: "Waiting on a part",
+  CUSTOMER_UNAVAILABLE: "Nobody at site",
+  SIGNED_OFF: "Customer signed off",
+  CANCELLED: "Cancelled",
+};
+
+/** The words, falling back to the raw state rather than to nothing. */
+function statusWord(status: string): string {
+  return STATUS_WORD[status] ?? status;
+}
+
 const NEXT: Record<string, readonly string[]> = {
   CREATED: ["ASSIGNED", "CANCELLED"],
   ASSIGNED: ["EN_ROUTE", "CUSTOMER_UNAVAILABLE", "CANCELLED"],
@@ -721,7 +747,7 @@ jobRoutes.post(
       tenantId: caller.tenantId,
       jobId: job.id,
       actorUserId: caller.userId,
-      label: "SIGNED_OFF",
+      label: statusWord("SIGNED_OFF"),
       occurredAt: signedAt,
       offline: false,
     });
@@ -816,7 +842,7 @@ jobRoutes.post(
       await db.insert(jobEvents).values({
         tenantId: caller.tenantId,
         jobId: id,
-        label: body.note ? `${body.to} — ${body.note}` : body.to,
+        label: body.note ? `${statusWord(body.to)} — ${body.note}` : statusWord(body.to),
         actorUserId: caller.userId,
         occurredAt,
         offline: occurredAt.getTime() < Date.now() - 60_000,
