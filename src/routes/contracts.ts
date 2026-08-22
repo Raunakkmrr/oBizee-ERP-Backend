@@ -17,6 +17,7 @@ import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
 import { formatNumber, nextInSeries } from "../lib/series.ts";
 import { VISITS_PER_YEAR, isoDay, visitSchedule, type Recurrence } from "../lib/visits.ts";
+import { generateVisitsFor } from "../lib/visit-generation.ts";
 import { audit } from "../lib/audit.ts";
 import { e164 } from "../lib/phone.ts";
 
@@ -163,6 +164,30 @@ contractRoutes.get("/", requirePermission("contract:read"), async (c) => {
         reschedulePolicy: contract.reschedulePolicy,
         /** The visits already raised as jobs, so the screen need not guess. */
         visitsOnBoard: keysByContract.get(contract.id) ?? [],
+        /*
+          How many are due in the horizon and not yet placed — answered here,
+          with the same `visitSchedule` the generator uses.
+
+          The screen used to recompute this from its own copy of the recurrence
+          maths, and the two disagreed: it offered "1 of 3 not on the board yet"
+          on a contract whose visits were all placed, so the button was always
+          present and always did nothing. Two implementations of "which visits
+          are due" will always drift; only one of them can be the one that
+          actually writes the jobs, and this is it.
+        */
+        visitsPending: schedules
+          .filter((s) => s.contractId === contract.id)
+          .flatMap((s) =>
+            visitSchedule(
+              s.id,
+              s.recurrence as Recurrence,
+              s.anchorDay,
+              s.visitsCommitted,
+              new Date(`${contract.startDate}T00:00:00`),
+              today,
+            ),
+          )
+          .filter((v) => !(keysByContract.get(contract.id) ?? []).includes(v.key)).length,
         schedules: schedules
           .filter((s) => s.contractId === contract.id)
           .map((s) => ({
@@ -287,106 +312,21 @@ contractRoutes.post(
     const caller = c.get("caller");
     const id = c.req.param("id");
 
-    const [contract] = await db
-      .select()
-      .from(contracts)
-      .where(and(eq(contracts.id, id), eq(contracts.tenantId, caller.tenantId)))
-      .limit(1);
-    if (!contract) return c.json({ error: "No such contract" }, 404);
-    if (!contract.siteId) return c.json({ error: "That contract has no site" }, 400);
-
-    const schedules = await db
-      .select()
-      .from(contractSchedules)
-      .where(eq(contractSchedules.contractId, id));
-
-    const existing = await db
-      .select({ visitKey: jobs.visitKey })
-      .from(jobs)
-      .where(eq(jobs.tenantId, caller.tenantId));
-    const taken = new Set(existing.map((j) => j.visitKey).filter(Boolean));
-
-    const branchId = contract.branchId ?? caller.branchId;
-    if (!branchId) return c.json({ error: "No branch on file" }, 400);
-    const [branch] = await db
-      .select({ prefix: branches.jobSeriesPrefix })
-      .from(branches)
-      .where(eq(branches.id, branchId))
-      .limit(1);
-
-    const now = new Date();
-    const start = new Date(`${contract.startDate}T00:00:00`);
-    const created = [];
-
     /*
-      What one visit is worth — but only when the visit is the thing being
-      billed.
+      The same code the nightly run calls.
 
-      Under `PER_VISIT` the invoice is raised against the job itself, so a job
-      with no value of its own left the biller with nothing to bill and the
-      screen fell back to a hardcoded ₹4,500: a ₹36,000 contract quietly
-      invoicing the wrong number, six times over.
-
-      Under every other frequency the money lives on the billing *period*, and
-      the period invoice already carries it. Putting a value on the visit as
-      well would offer the same rupees twice — once from the job, once from
-      Ready-to-bill — so those visits are deliberately left unpriced.
-
-      Divided across the year's visits from every schedule, because a contract
-      with a pest schedule and a rodent schedule sells both out of one annual
-      value.
+      This handler used to hold the generation logic, which meant the only thing
+      that could place a due visit was somebody pressing a button. Two
+      implementations of "which visits are due" would eventually disagree, and
+      the one nobody watches would be the wrong one.
     */
-    const annualVisits = schedules.reduce(
-      (sum, s) => sum + VISITS_PER_YEAR[s.recurrence as Recurrence],
-      0,
-    );
-    const perVisitPaise =
-      contract.billing === "PER_VISIT" && annualVisits > 0
-        ? Math.round(contract.annualValuePaise / annualVisits)
-        : null;
-
-    for (const schedule of schedules) {
-      const planned = visitSchedule(
-        schedule.id,
-        schedule.recurrence as Recurrence,
-        schedule.anchorDay,
-        schedule.visitsCommitted,
-        start,
-        now,
-      );
-      for (const visit of planned) {
-        if (taken.has(visit.key)) continue;
-        const sequence = await nextInSeries(caller.tenantId, branchId, "job", visit.on);
-        const [job] = await db
-          .insert(jobs)
-          .values({
-            tenantId: caller.tenantId,
-            branchId,
-            jobNumber: formatNumber("job", branch?.prefix ?? "J", sequence, visit.on),
-            customerId: contract.customerId,
-            siteId: contract.siteId,
-            contractScheduleId: schedule.id,
-            visitKey: visit.key,
-            visitNumber: visit.number,
-            visitOf: visit.of,
-            serviceType: schedule.scope,
-            valuePaise: perVisitPaise,
-            scheduledDate: isoDay(visit.on),
-            // A scheduled visit carries the slot promise, not a timestamp
-            // nobody agreed to (FR-203).
-            slot: "9-1",
-            status: "CREATED",
-          })
-          .returning();
-        created.push(job);
-      }
-    }
+    const created = await generateVisitsFor(caller.tenantId, id, caller.branchId ?? null);
 
     if (created.length > 0) {
       await audit(
         caller,
         "GENERATE_CONTRACT_VISITS",
-        `Put ${created.length} visit(s) from ${contract.reference} on the board`,
+        `Put ${created.length} visit(s) on the board`,
         { table: "contracts", id },
       );
     }
