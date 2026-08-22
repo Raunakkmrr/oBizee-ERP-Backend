@@ -72,16 +72,28 @@ customerRoutes.get("/", requirePermission("customer:read"), async (c) => {
       .from(jobs)
       .leftJoin(users, eq(jobs.primaryTechnicianId, users.id))
       .where(eq(jobs.tenantId, tenantId)),
+    /*
+      Issued invoices only — a cancelled one charges nobody and a draft is not
+      a document yet.
+
+      Both sides summed every invoice regardless of status, so a customer whose
+      bills had been cancelled still showed the money as outstanding, and the
+      Customers screen and the Money screen gave different answers for the same
+      customer. `money.ts` already scopes its receivables this way; this is the
+      copy that drifted.
+    */
     db
       .select({ customerId: invoices.customerId, total: sum(invoices.grandTotalPaise) })
       .from(invoices)
-      .where(eq(invoices.tenantId, tenantId))
+      .where(and(eq(invoices.tenantId, tenantId), eq(invoices.status, "ISSUED")))
       .groupBy(invoices.customerId),
+    // Scoped the same way, or money paid against a cancelled bill would show as
+    // a credit reducing what is genuinely owed on the live ones.
     db
       .select({ customerId: invoices.customerId, total: sum(payments.amountPaise) })
       .from(payments)
       .innerJoin(invoices, eq(payments.invoiceId, invoices.id))
-      .where(eq(payments.tenantId, tenantId))
+      .where(and(eq(payments.tenantId, tenantId), eq(invoices.status, "ISSUED")))
       .groupBy(invoices.customerId),
   ]);
 
