@@ -158,3 +158,32 @@ export const stockMovementKindEnum = pgEnum("stock_movement_kind", [
   "CONSUME",
   "ADJUSTMENT",
 ]);
+
+/*
+  Telling people about work before it happens.
+
+  The office is deliberately not sent one of these per job: twenty-five a day to
+  the same five people becomes a mail rule inside a week, and a system nobody
+  reads is worse than none because it is still trusted.
+*/
+export const reminderKindEnum = pgEnum("reminder_kind", [
+  "visit_in_7_days",
+  "visit_tomorrow",
+  "daily_digest",
+]);
+
+export const reminderChannelEnum = pgEnum("reminder_channel", ["whatsapp", "email"]);
+
+/** The same visit means a different sentence to each of these. */
+export const reminderAudienceEnum = pgEnum("reminder_audience", [
+  "customer",
+  "technician",
+  "office",
+]);
+
+export const reminderStateEnum = pgEnum("reminder_state", [
+  "pending",
+  "sent",
+  "failed",
+  "skipped",
+]);

@@ -189,6 +189,21 @@ export const contacts = pgTable("contacts", {
   whatsappE164: text("whatsapp_e164"),
   roleLabel: e.contactRoleEnum("role_label").notNull(),
   isPrimary: boolean("is_primary").notNull().default(false),
+  /**
+   * Consent, recorded rather than assumed.
+   *
+   * Business-initiated WhatsApp needs opt-in, and a withdrawal has to be
+   * honoured by every future send rather than remembered by whoever writes the
+   * next feature — so it is a fact on the contact, and the reminder read
+   * filters on it at source instead of trusting callers to.
+   */
+  remindersOptedOut: boolean("reminders_opted_out").notNull().default(false),
+  /**
+   * Nullable on purpose: most household customers have no email worth writing
+   * to, and WhatsApp is what reaches them. Requiring one would block the
+   * contact record the job card actually needs.
+   */
+  email: text("email"),
 });
 
 export const assets = pgTable("assets", {
@@ -912,5 +927,52 @@ export const refreshTokens = pgTable(
   (t) => [
     unique("refresh_tokens_hash_uq").on(t.tokenHash),
     index("refresh_tokens_user_idx").on(t.userId),
+  ],
+);
+
+/**
+ * The reminder outbox — what we intend to tell somebody, and whether we did.
+ *
+ * **Why an outbox rather than calling the provider where the decision is made.**
+ * A message is a side effect on the outside world: it cannot be rolled back,
+ * and sending it twice is worse than sending it late. Writing the intention
+ * down first and draining it separately makes the send idempotent, retryable,
+ * and auditable — which is what answers a customer who says nobody told them.
+ *
+ * **`dedupeKey` is the whole design.** A composite over (jobId, kind, channel,
+ * recipient) looks equivalent and is not: a digest has no job, Postgres treats
+ * nulls as distinct, and the office would be messaged once per run forever.
+ */
+export const reminders = pgTable(
+  "reminders",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    /** Null for a digest, which is about a day rather than about one job. */
+    jobId: uuid("job_id").references(() => jobs.id, { onDelete: "cascade" }),
+    kind: e.reminderKindEnum("kind").notNull(),
+    channel: e.reminderChannelEnum("channel").notNull(),
+    audience: e.reminderAudienceEnum("audience").notNull(),
+    /**
+     * The address as it resolved when the reminder was raised, not a join to
+     * wherever it lives now. A contact who changes their number after we wrote
+     * to the old one should leave a record of the old one.
+     */
+    recipient: text("recipient").notNull(),
+    recipientUserId: uuid("recipient_user_id").references(() => users.id),
+    templateKey: text("template_key").notNull(),
+    payload: jsonb("payload").notNull().default({}),
+    state: e.reminderStateEnum("state").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
+    /** When it should go — quiet hours live in the data, not in the caller. */
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    dedupeKey: text("dedupe_key").notNull(),
+  },
+  (t) => [
+    unique("reminders_dedupe_uq").on(t.tenantId, t.dedupeKey),
+    index("reminders_job_idx").on(t.jobId),
   ],
 );
