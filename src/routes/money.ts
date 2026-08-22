@@ -157,6 +157,17 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
       invoiceDate: dateWord(inv.issueDate),
       daysOverdue,
       amountPaise: inv.outstanding,
+      /*
+        Billed and received, not just what is left.
+
+        A ₹3,080 balance on a ₹7,080 invoice and a ₹3,080 invoice nobody has
+        touched are the same number and completely different conversations: one
+        customer has paid and is slow on the rest, the other has paid nothing.
+        Recording a payment became possible before finding the part-paid ones
+        did, so the list could not tell them apart.
+      */
+      billedPaise: inv.grandTotalPaise,
+      paidPaise: paidBy.get(inv.id) ?? 0,
       lastContact: note ? `${shortWord(note.occurredAt)} — ${note.note}` : null,
       phone:
         (inv.siteId ? phoneBySite.get(inv.siteId) : undefined) ??
