@@ -16,7 +16,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { PRICE_FIELDS, stripFields } from "../auth/context.ts";
 import { can } from "../auth/roles.ts";
 import { db } from "../db/client.ts";
-import { customers, jobEvents, jobs, leads, sites, users } from "../db/schema.ts";
+import { customers, jobEvents, jobs, leads, reminders, sites, users } from "../db/schema.ts";
 import { apiRouter } from "../lib/router.ts";
 import { sla } from "../lib/sla.ts";
 
@@ -94,9 +94,33 @@ boardRoutes.get("/today", async (c) => {
       .select()
       .from(users)
       .where(and(eq(users.tenantId, tenantId), eq(users.role, "technician"), eq(users.active, true))),
+    /*
+      Tomorrow's jobs, not a count of them.
+
+      This returned `count(*)` and the board's "Tomorrow" tab therefore had
+      nothing to render — the control was live, changed the highlight, and
+      showed the same day's work. The one thing a coordinator needs the evening
+      before is exactly what was not being sent.
+    */
     db
-      .select({ n: sql<number>`count(*)::int` })
+      .select({
+        id: jobs.id,
+        jobNumber: jobs.jobNumber,
+        slot: jobs.slot,
+        customer: customers.name,
+        locality: sites.locality,
+        serviceType: jobs.serviceType,
+        visitNumber: jobs.visitNumber,
+        visitOf: jobs.visitOf,
+        status: jobs.status,
+        priority: jobs.priority,
+        technicianId: jobs.primaryTechnicianId,
+        technicianName: users.name,
+      })
       .from(jobs)
+      .innerJoin(customers, eq(jobs.customerId, customers.id))
+      .innerJoin(sites, eq(jobs.siteId, sites.id))
+      .leftJoin(users, eq(jobs.primaryTechnicianId, users.id))
       .where(and(scope, eq(jobs.scheduledDate, tomorrow))),
     db
       .select({ n: sql<number>`count(*)::int` })
@@ -198,11 +222,60 @@ boardRoutes.get("/today", async (c) => {
     ? jobRows
     : stripFields(jobRows, PRICE_FIELDS as readonly (keyof (typeof jobRows)[number])[]);
 
+  /*
+    Whether the customer has actually been told, per job.
+
+    Read from the outbox rather than inferred from "a reminder was scheduled",
+    because those are different facts and only one of them means the customer
+    knows. A visit whose message failed looks identical to one that went, and
+    the difference is a technician arriving at a locked gate.
+  */
+  const told = tomorrowRows.length
+    ? await db
+        .select({ jobId: reminders.jobId, state: reminders.state })
+        .from(reminders)
+        .where(
+          and(
+            eq(reminders.tenantId, tenantId),
+            eq(reminders.audience, "customer"),
+            inArray(
+              reminders.jobId,
+              tomorrowRows.map((r) => r.id),
+            ),
+          ),
+        )
+    : [];
+
+  const toldBy = new Map<string, "sent" | "pending" | "failed">();
+  for (const row of told) {
+    if (!row.jobId) continue;
+    const current = toldBy.get(row.jobId);
+    // Sent beats everything: one channel arriving is enough for the customer
+    // to know. A failure only matters when nothing else got through.
+    if (row.state === "sent") toldBy.set(row.jobId, "sent");
+    else if (row.state === "failed" && current !== "sent") toldBy.set(row.jobId, "failed");
+    else if (!current) toldBy.set(row.jobId, "pending");
+  }
+
   return c.json({
     counters,
     jobs: visible,
     technicians,
-    tomorrowJobs: tomorrowRows[0]?.n ?? 0,
+    tomorrowJobs: tomorrowRows.length,
+    tomorrow: tomorrowRows.map((r) => ({
+      id: r.id,
+      jobNumber: r.jobNumber,
+      slot: r.slot ?? "Unslotted",
+      customer: r.customer,
+      locality: r.locality ?? "—",
+      serviceType: r.serviceType,
+      visit: r.visitNumber === null && r.visitOf === null ? null : { n: r.visitNumber, of: r.visitOf },
+      status: r.status,
+      priority: r.priority,
+      technician: r.technicianId ? { id: r.technicianId, name: r.technicianName ?? "—" } : null,
+      /** `null` when no reminder exists yet — not the same as one that failed. */
+      customerTold: toldBy.get(r.id) ?? null,
+    })),
     leadsDueToday: leadRows[0]?.n ?? 0,
   });
 });
