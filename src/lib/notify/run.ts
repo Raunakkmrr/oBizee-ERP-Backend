@@ -21,6 +21,7 @@ import {
   users,
 } from "../../db/schema.ts";
 import { addDays, planReminders, sendableAt, type PlannableJob } from "../reminders.ts";
+import { generateDueVisits } from "../visit-generation.ts";
 import type { Sender } from "./sender.ts";
 
 /** Desks that should see the digest — the people who fix an unassigned visit. */
@@ -107,7 +108,7 @@ async function jobsInWindow(tenantId: string, today: string): Promise<PlannableJ
   });
 }
 
-export type RunSummary = { planned: number; inserted: number };
+export type RunSummary = { planned: number; inserted: number; visitsCreated: number };
 
 /** Raise today's reminders. Sends nothing — that is the drain's job. */
 export async function enqueueReminders(tenantId: string, today: string): Promise<RunSummary> {
@@ -123,6 +124,16 @@ export async function enqueueReminders(tenantId: string, today: string): Promise
   if (currentTenant() !== tenantId) {
     return withTenant(tenantId, () => enqueueReminders(tenantId, today));
   }
+  /*
+    Put the due visits on the board first, then decide who to tell about them.
+
+    Order matters: a visit generated tonight is a visit that can be reminded
+    about tonight. Reversed, every newly-placed visit would wait a full day for
+    its first reminder — and a visit placed on the 23rd for the 24th would never
+    get one at all.
+  */
+  const visits = await generateDueVisits(tenantId, today);
+
   const [tenant] = await db
     .select({ name: tenants.legalName })
     .from(tenants)
@@ -149,7 +160,7 @@ export async function enqueueReminders(tenantId: string, today: string): Promise
       .map((p) => ({ email: p.email, userId: p.id })),
   });
 
-  if (planned.length === 0) return { planned: 0, inserted: 0 };
+  if (planned.length === 0) return { planned: 0, inserted: 0, visitsCreated: visits.created };
 
   const scheduledFor = sendableAt(new Date());
   const written = await db
@@ -173,7 +184,7 @@ export async function enqueueReminders(tenantId: string, today: string): Promise
     .onConflictDoNothing({ target: [reminders.tenantId, reminders.dedupeKey] })
     .returning({ id: reminders.id });
 
-  return { planned: planned.length, inserted: written.length };
+  return { planned: planned.length, inserted: written.length, visitsCreated: visits.created };
 }
 
 export type DrainSummary = { sent: number; failed: number; held: number };

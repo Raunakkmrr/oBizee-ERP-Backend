@@ -8,12 +8,14 @@
  * raises. Every send that will not succeed has to land in front of a person
  * who can pick up a phone.
  */
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { timingSafeEqual } from "node:crypto";
+
+import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { requirePermission } from "../auth/context.ts";
-import { db } from "../db/client.ts";
-import { customers, jobs, reminders } from "../db/schema.ts";
+import { adminDb, db } from "../db/client.ts";
+import { customers, jobs, reminders, tenants } from "../db/schema.ts";
 import { audit } from "../lib/audit.ts";
 import { drainReminders, enqueueReminders } from "../lib/notify/run.ts";
 import { DevSender } from "../lib/notify/sender.ts";
@@ -23,6 +25,16 @@ import { apiRouter } from "../lib/router.ts";
 import { zBody } from "../lib/validate.ts";
 
 export const reminderRoutes = apiRouter();
+
+/**
+ * Mounted OUTSIDE `/api`, deliberately.
+ *
+ * `app.use("/api/*", requireCaller)` demands a signed-in caller, and a
+ * scheduler has no token — so a cron endpoint under `/api` would be refused
+ * before it ever reached its own secret check, and would have failed silently
+ * every night.
+ */
+export const cronRoutes = apiRouter();
 
 /**
  * Which providers are live, decided once from the environment.
@@ -112,3 +124,70 @@ reminderRoutes.post(
     return c.json({ today, ...enqueued, ...drained });
   },
 );
+
+
+/**
+ * The nightly run, for every tenant, called by a scheduler.
+ *
+ * **Why this is separate from `/run` and not just an unauthenticated version of
+ * it.** `/run` is a person pressing a button: it carries their token, their
+ * tenant and their permission, and it belongs on the screen so a stalled cron
+ * can be recovered by hand. This one has no person behind it, so it is guarded
+ * by a shared secret and iterates every tenant — and it must never be reachable
+ * without that secret, because it writes jobs and sends messages to real
+ * customers.
+ *
+ * **Timing-safe comparison**, because a plain `===` on a secret leaks its
+ * length and prefix to anyone patient enough to measure. Cheap to do right.
+ *
+ * Fires from EventBridge Scheduler, Vercel Cron, GitHub Actions or a crontab
+ * with `curl` — the endpoint does not care which, which is the point. What it
+ * does care about is being safe to call twice, and it is: visit generation
+ * dedupes on `visitKey` and reminders on `reminders_dedupe_uq`.
+ */
+cronRoutes.post("/daily", async (c) => {
+  const expected = process.env.CRON_SECRET;
+  if (!expected) {
+    /*
+      Refused rather than defaulted open. A scheduler endpoint that runs without
+      a configured secret is one anybody can use to message a firm's entire
+      customer list.
+    */
+    return c.json({ error: "CRON_SECRET is not configured, so this endpoint is closed" }, 503);
+  }
+
+  const offered = c.req.header("x-cron-secret") ?? "";
+  const a = Buffer.from(offered);
+  const b = Buffer.from(expected);
+  const authorised = a.length === b.length && timingSafeEqual(a, b);
+  if (!authorised) return c.json({ error: "Not authorised" }, 401);
+
+  const today = todayInIndia();
+  const senders = sendersFrom();
+
+  /*
+    `adminDb` only to list the tenants. Everything inside the loop runs through
+    the tenant-scoped client — `enqueueReminders` and `drainReminders` establish
+    their own scope — so one firm's run can never read or write another's.
+  */
+  const all = await adminDb.select({ id: tenants.id, name: tenants.legalName }).from(tenants);
+
+  const results = [];
+  for (const tenant of all) {
+    try {
+      const enqueued = await enqueueReminders(tenant.id, today);
+      const drained = await drainReminders(tenant.id, senders);
+      results.push({ tenant: tenant.name, ...enqueued, ...drained });
+    } catch (cause) {
+      /*
+        One tenant's failure must not stop the rest. A cron that dies on the
+        third of forty firms leaves thirty-seven with no reminders and nothing
+        to say so — which is the silent failure this whole feature exists to
+        avoid, reproduced at the top level.
+      */
+      results.push({ tenant: tenant.name, error: String(cause) });
+    }
+  }
+
+  return c.json({ today, tenants: results.length, results });
+});

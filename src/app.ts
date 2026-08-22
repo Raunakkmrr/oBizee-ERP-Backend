@@ -6,7 +6,7 @@ import { moneyRoutes } from "./routes/money.ts";
 import { jobDetailRoutes } from "./routes/job-detail.ts";
 import { reportRoutes } from "./routes/reports.ts";
 import { peopleRoutes } from "./routes/people.ts";
-import { reminderRoutes } from "./routes/reminders.ts";
+import { cronRoutes, reminderRoutes } from "./routes/reminders.ts";
 import { settingsRoutes } from "./routes/settings.ts";
 import { partRoutes } from "./routes/parts.ts";
 import { changeOwnPassword } from "./auth/sign-in.ts";
@@ -112,6 +112,8 @@ app.route("/api/payments", paymentRoutes);
 app.route("/api/money", moneyRoutes);
 app.route("/api/gst", gstRoutes);
 app.route("/api/reminders", reminderRoutes);
+// Outside /api: a scheduler carries a shared secret, not a user token.
+app.route("/cron", cronRoutes);
 
 /**
  * Who is signed in, according to the token.
