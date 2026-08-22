@@ -22,6 +22,8 @@
 import { sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it } from "vitest";
 
+import { ensureProbeTenant } from "../test/probe-tenant.ts";
+
 import { adminDb as db } from "../db/client.ts";
 import { apiIsLive } from "../db/live.ts";
 
@@ -69,6 +71,15 @@ const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
 describe.skipIf(!reachable)("how the API refuses", () => {
   let auth: Record<string, string>;
+  /*
+    A second identity, on a tenant the harness owns.
+
+    Everything below that *writes a document* uses this one. Invoices cannot be
+    deleted — a spent number stays spent, by design — so probes raised against
+    the demo firm were permanent, and showed up in front of whoever the product
+    was being demonstrated to.
+  */
+  let probe: Record<string, string>;
 
   beforeAll(async () => {
     /*
@@ -105,6 +116,15 @@ describe.skipIf(!reachable)("how the API refuses", () => {
     });
     const { accessToken } = (await res.json()) as { accessToken: string };
     auth = { Authorization: `Bearer ${accessToken}`, "content-type": "application/json" };
+
+    const harness = await ensureProbeTenant();
+    const probeRes = await fetch(`${BASE}/auth/password`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email: harness.email, password: harness.password }),
+    });
+    const probeToken = ((await probeRes.json()) as { accessToken: string }).accessToken;
+    probe = { Authorization: `Bearer ${probeToken}`, "content-type": "application/json" };
   });
 
   it("refuses every read without a token", async () => {
@@ -206,15 +226,25 @@ describe.skipIf(!reachable)("how the API refuses", () => {
       the wrong GSTIN, which nobody notices once it is on a return.
     */
     const get = async (path: string) =>
-      (await fetch(`${BASE}${path}`, { headers: auth })).json() as Promise<{
+      (await fetch(`${BASE}${path}`, { headers: probe })).json() as Promise<{
         customers: { id: string; name: string; sites: { id: string }[] }[];
       }>;
     const { customers } = await get("/api/customers");
     const [a, b] = customers.filter((c) => c.sites.length > 0);
+    /*
+      Asserted, not skipped.
+
+      This read `if (!a || !b) return;` — so the day the fixture had only one
+      customer, the guard passed having compared nothing, and the green tick
+      hid it. A test that quietly opts out when its fixture is inadequate is a
+      test that reports success for the one condition it exists to catch.
+    */
+    expect(a, "the harness tenant needs two customers with sites").toBeDefined();
+    expect(b, "the harness tenant needs two customers with sites").toBeDefined();
     if (!a || !b) return;
 
     const post = async (path: string, body: unknown) =>
-      (await fetch(`${BASE}${path}`, { method: "POST", headers: auth, body: JSON.stringify(body) })).json();
+      (await fetch(`${BASE}${path}`, { method: "POST", headers: probe, body: JSON.stringify(body) })).json();
 
     const line = [{ description: "guard", code: "9987", kind: "service", qty: 1, ratePaise: 100_00, ratePercent: 18 }];
     const advance = (await post("/api/advances", {
@@ -231,7 +261,7 @@ describe.skipIf(!reachable)("how the API refuses", () => {
 
     const res = await fetch(`${BASE}/api/advances/${advance.id}/adjust`, {
       method: "POST",
-      headers: auth,
+      headers: probe,
       body: JSON.stringify({ invoiceId: theirs.id }),
     });
     expect(res.status).toBe(409);
@@ -322,12 +352,25 @@ describe.skipIf(!reachable)("how the API refuses", () => {
   });
 
   describe("the invoice series", () => {
+    /*
+      This block writes real documents, so it writes them somewhere else.
+
+      Series probes, cancellations and a hundred-paise payment used to land in
+      the demo tenant, and an issued invoice cannot be deleted — a spent number
+      stays spent, by design. So every run left permanent rubbish against a real
+      customer, which showed up on the Customers screen as money owed and on
+      Money as fifty-four "part paid" rows, in front of whoever the product was
+      being demonstrated to.
+
+      `nfr-gates.ts` already made this argument for the load probe: a harness
+      that *can* reach the demo tenant eventually will.
+    */
     const post = (path: string, body: unknown) =>
-      fetch(`${BASE}${path}`, { method: "POST", headers: auth, body: JSON.stringify(body) });
+      fetch(`${BASE}${path}`, { method: "POST", headers: probe, body: JSON.stringify(body) });
 
     async function draft() {
       const { customers } = (await (
-        await fetch(`${BASE}/api/customers`, { headers: auth })
+        await fetch(`${BASE}/api/customers`, { headers: probe })
       ).json()) as { customers: { id: string; sites: { id: string }[] }[] };
       const c = customers.find((x) => x.sites.length > 0)!;
       return (await (
