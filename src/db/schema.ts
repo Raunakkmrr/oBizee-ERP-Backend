@@ -1043,3 +1043,27 @@ export const creditNoteLines = pgTable("credit_note_lines", {
   taxablePaise: money("taxable_paise").notNull(),
   taxPaise: money("tax_paise").notNull(),
 });
+
+/**
+ * When the annual return was filed, per financial year.
+ *
+ * §34(2) shuts the credit-note window on 30 November following the year *or*
+ * the date GSTR-9 was filed, whichever is earlier. Above ₹2 crore turnover
+ * GSTR-9 is mandatory, so a firm whose CA files in September loses two months
+ * against the statute — and nobody can infer that date. Somebody has to say it.
+ *
+ * An absent row means nobody has told us, which is not the same as "not filed".
+ */
+export const gstr9Filings = pgTable(
+  "gstr9_filings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    /** 2026 means the 2026-27 year. */
+    financialYear: integer("financial_year").notNull(),
+    filedOn: date("filed_on").notNull(),
+    recordedByUserId: uuid("recorded_by_user_id").references(() => users.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique("gstr9_filings_year_uq").on(t.tenantId, t.financialYear)],
+);

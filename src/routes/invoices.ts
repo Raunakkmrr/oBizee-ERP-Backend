@@ -3,7 +3,7 @@ import { z } from "zod";
 import { and, asc, count, eq, sum } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import {
-  branches, contracts, contractSchedules, creditNotes, customers, invoiceLines, invoices, jobs, payments, signOffs, sites, tenants, users,
+  branches, contracts, contractSchedules, creditNotes, customers, gstr9Filings, invoiceLines, invoices, jobs, payments, signOffs, sites, tenants, users,
 } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
@@ -18,6 +18,7 @@ import { financialYear, formatNumber, nextInSeries } from "../lib/series.ts";
 import { audit } from "../lib/audit.ts";
 import { billablePeriods, type BillingFrequency } from "../lib/billing-periods.ts";
 import { creditedAgainst } from "./credit-notes.ts";
+import { creditNoteWindow, financialYearOf } from "../lib/credit-note-window.ts";
 import { outstandingOf } from "../lib/receivables.ts";
 import { inArray, ne } from "drizzle-orm";
 
@@ -352,6 +353,32 @@ invoiceRoutes.get("/:id", requirePermission("invoice:read"), async (c) => {
     customer has ignored has not reduced the tax, and looks identical to one
     that has.
   */
+  /*
+    How long is left to credit this invoice — §34(2).
+
+    Carried on the invoice rather than computed in the browser, because the
+    answer depends on when the annual return was filed and the browser has no
+    business knowing that. It is also the number that decides whether the
+    over-declared tax is recoverable at all: after the deadline there is no
+    bad-debt relief, and the money is simply gone.
+  */
+  const [filing] = await db
+    .select({ filedOn: gstr9Filings.filedOn })
+    .from(gstr9Filings)
+    .where(
+      and(
+        eq(gstr9Filings.tenantId, tenantId),
+        eq(gstr9Filings.financialYear, financialYearOf(row.invoice.issueDate)),
+      ),
+    )
+    .limit(1);
+
+  const window = creditNoteWindow({
+    invoiceIssueDate: row.invoice.issueDate,
+    gstr9FiledOn: filing?.filedOn ?? null,
+    today: new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }),
+  });
+
   const notes = await db
     .select({
       id: creditNotes.id,
@@ -415,6 +442,7 @@ invoiceRoutes.get("/:id", requirePermission("invoice:read"), async (c) => {
     paidPaise,
     creditedPaise,
     creditNotes: notes,
+    creditWindow: window,
     /* One definition, shared with every other screen that answers this — see
        `lib/receivables.ts` for why it is not six expressions. */
     outstandingPaise: outstandingOf({

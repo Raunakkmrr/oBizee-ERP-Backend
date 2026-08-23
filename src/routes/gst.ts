@@ -1,10 +1,11 @@
-import { zParam, zQuery } from "../lib/validate.ts";
+import { zBody, zParam, zQuery } from "../lib/validate.ts";
 import { z } from "zod";
 import { and, eq, gte, lte } from "drizzle-orm";
 import { db } from "../db/client.ts";
-import { branches, customers, invoiceLines, invoices, tenants } from "../db/schema.ts";
+import { branches, customers, gstr9Filings, invoiceLines, invoices, tenants } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
+import { audit } from "../lib/audit.ts";
 import { computeTotals, type InvoiceLine } from "../lib/tax.ts";
 
 /**
@@ -424,3 +425,67 @@ gstRoutes.get(
     return c.json({ provenance, summary });
   },
 );
+
+/**
+ * When the annual return for a year was filed.
+ *
+ * **Why the product has to ask.** §34(2) shuts the credit-note window on 30
+ * November following the financial year *or* the day GSTR-9 was filed,
+ * whichever is earlier. Nothing here can observe that date — it happens on the
+ * portal, usually by the CA — so until somebody records it every deadline the
+ * product shows is the statute's outside date, which is the generous one.
+ *
+ * For a firm above ₹2 crore, where GSTR-9 is mandatory, that gap is the
+ * difference between believing there is until November and finding the window
+ * shut in September.
+ */
+gstRoutes.post(
+  "/annual-return",
+  requirePermission("gst:write"),
+  zBody(
+    z.object({
+      /** 2026 means the 2026-27 year. */
+      financialYear: z.number().int().min(2017).max(2100),
+      filedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    }),
+  ),
+  async (c) => {
+    const caller = c.get("caller");
+    const body = c.req.valid("json");
+
+    const [row] = await db
+      .insert(gstr9Filings)
+      .values({
+        tenantId: caller.tenantId,
+        financialYear: body.financialYear,
+        filedOn: body.filedOn,
+        recordedByUserId: caller.userId,
+      })
+      /* Correcting a date somebody mistyped must be possible: it moves every
+         credit-note deadline for that year. */
+      .onConflictDoUpdate({
+        target: [gstr9Filings.tenantId, gstr9Filings.financialYear],
+        set: { filedOn: body.filedOn, recordedByUserId: caller.userId },
+      })
+      .returning();
+
+    await audit(
+      caller,
+      "RECORD_GSTR9_FILING",
+      `GSTR-9 for ${body.financialYear}-${String(body.financialYear + 1).slice(2)} filed on ${body.filedOn}`,
+      { table: "gstr9_filings", id: row!.id },
+    );
+
+    return c.json(row, 201);
+  },
+);
+
+/** Every year recorded, so a screen can show which are known. */
+gstRoutes.get("/annual-returns", requirePermission("gst:read"), async (c) => {
+  const { tenantId } = c.get("caller");
+  const rows = await db
+    .select({ financialYear: gstr9Filings.financialYear, filedOn: gstr9Filings.filedOn })
+    .from(gstr9Filings)
+    .where(eq(gstr9Filings.tenantId, tenantId));
+  return c.json({ filings: rows });
+});
