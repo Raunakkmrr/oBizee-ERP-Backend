@@ -297,6 +297,23 @@ export async function gstPeriod(tenantId: string, period: string) {
     };
 }
 
+/*
+  Declared BEFORE `/:period`, and that ordering is the whole point.
+
+  Hono matches in declaration order, so `/annual-returns` was being captured by
+  `/:period` and then refused for not looking like `2026-08` — a 400 on a route
+  that exists, which reads as a broken screen rather than a misrouted request.
+*/
+/** Every year recorded, so a screen can show which are known. */
+gstRoutes.get("/annual-returns", requirePermission("gst:read"), async (c) => {
+  const { tenantId } = c.get("caller");
+  const rows = await db
+    .select({ financialYear: gstr9Filings.financialYear, filedOn: gstr9Filings.filedOn })
+    .from(gstr9Filings)
+    .where(eq(gstr9Filings.tenantId, tenantId));
+  return c.json({ filings: rows });
+});
+
 gstRoutes.get(
   "/:period",
   requirePermission("gst:read"),
@@ -479,13 +496,3 @@ gstRoutes.post(
     return c.json(row, 201);
   },
 );
-
-/** Every year recorded, so a screen can show which are known. */
-gstRoutes.get("/annual-returns", requirePermission("gst:read"), async (c) => {
-  const { tenantId } = c.get("caller");
-  const rows = await db
-    .select({ financialYear: gstr9Filings.financialYear, filedOn: gstr9Filings.filedOn })
-    .from(gstr9Filings)
-    .where(eq(gstr9Filings.tenantId, tenantId));
-  return c.json({ filings: rows });
-});
