@@ -6,6 +6,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   primaryKey,
   text,
@@ -976,3 +977,69 @@ export const reminders = pgTable(
     index("reminders_job_idx").on(t.jobId),
   ],
 );
+
+/**
+ * A credit note — §34(1), the only lawful way to reduce output tax already
+ * declared.
+ *
+ * **Its own table rather than a flag on `invoices`.** A discriminator would put
+ * credit notes inside every existing sum — receivables, customer outstanding,
+ * the owner snapshot, the ageing buckets — and each would be silently wrong
+ * until somebody noticed. A separate table forces every place that must account
+ * for one to say so.
+ */
+export const creditNotes = pgTable(
+  "credit_notes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+    branchId: uuid("branch_id").notNull().references(() => branches.id),
+    /** Null until issued — a draft is not a document anybody can refer to. */
+    number: text("number"),
+    financialYear: integer("financial_year").notNull(),
+    /** The invoice this reduces. Required: GSTR-1's CDNR table needs it. */
+    invoiceId: uuid("invoice_id").notNull().references(() => invoices.id),
+    customerId: uuid("customer_id").notNull().references(() => customers.id),
+    siteId: uuid("site_id").references(() => sites.id),
+    billTo: jsonb("bill_to"),
+    issueDate: date("issue_date").notNull(),
+    /**
+     * Why, and required.
+     *
+     * §34 permits a credit note for specific causes — a deficiency in supply,
+     * tax charged in excess, goods returned. "The customer did not pay" is not
+     * one of them, and asking for the reason is how whoever raises it is made
+     * to think about which one applies.
+     */
+    reason: text("reason").notNull(),
+    head: e.taxHeadEnum("head").notNull(),
+    explanation: text("explanation").notNull(),
+    taxablePaise: money("taxable_paise").notNull(),
+    totalTaxPaise: money("total_tax_paise").notNull(),
+    roundOffPaise: money("round_off_paise").notNull().default(0),
+    grandTotalPaise: money("grand_total_paise").notNull(),
+    status: e.invoiceStatusEnum("status").notNull().default("DRAFT"),
+    imsState: e.creditNoteImsEnum("ims_state").notNull().default("PENDING"),
+    /** When somebody last checked the portal. Null means nobody has. */
+    imsCheckedAt: timestamp("ims_checked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("credit_notes_invoice_idx").on(t.invoiceId)],
+);
+
+export const creditNoteLines = pgTable("credit_note_lines", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  creditNoteId: uuid("credit_note_id")
+    .notNull()
+    .references(() => creditNotes.id, { onDelete: "cascade" }),
+  position: integer("position").notNull(),
+  description: text("description").notNull(),
+  code: text("code").notNull(),
+  kind: text("kind").notNull().default("service"),
+  qty: numeric("qty", { precision: 12, scale: 3 }).notNull().default("1"),
+  ratePaise: money("rate_paise").notNull(),
+  ratePercent: integer("rate_percent").notNull().default(18),
+  taxablePaise: money("taxable_paise").notNull(),
+  taxPaise: money("tax_paise").notNull(),
+});

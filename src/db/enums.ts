@@ -187,3 +187,19 @@ export const reminderStateEnum = pgEnum("reminder_state", [
   "failed",
   "skipped",
 ]);
+
+/**
+ * Whether the customer has accepted a credit note — and why it decides
+ * everything.
+ *
+ * From October 2025, Rule 67B with the Invoice Management System: a supplier
+ * reduces liability against a credit note only once the recipient accepts it.
+ * Rejected or ignored, the liability comes back in the next GSTR-3B. So a
+ * credit note is a request, not a decision the supplier makes alone, and an
+ * unactioned one silently reverses.
+ */
+export const creditNoteImsEnum = pgEnum("credit_note_ims", [
+  "PENDING",
+  "ACCEPTED",
+  "REJECTED",
+]);

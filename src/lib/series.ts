@@ -20,7 +20,7 @@ import { db } from "../db/client.ts";
  * aloud and typed into a search box, so it wants the same guarantee of being
  * unique and consecutive.
  */
-export type DocType = "job" | "invoice" | "receipt_voucher" | "lead";
+export type DocType = "job" | "invoice" | "receipt_voucher" | "lead" | "credit_note";
 
 /** 1 April boundary — 2026 means the 2026-27 financial year. */
 export function financialYear(on: Date): number {
