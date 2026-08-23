@@ -3,7 +3,7 @@ import { z } from "zod";
 import { and, asc, count, eq } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import {
-  branches, contracts, contractSchedules, customers, invoiceLines, invoices, jobs, payments, signOffs, sites, tenants, users,
+  branches, contracts, contractSchedules, creditNotes, customers, invoiceLines, invoices, jobs, payments, signOffs, sites, tenants, users,
 } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
@@ -344,6 +344,28 @@ invoiceRoutes.get("/:id", requirePermission("invoice:read"), async (c) => {
   /* Credit notes reduce what is owed as surely as a payment does. */
   const creditedPaise = (await creditedAgainst(tenantId, [row.invoice.id])).get(row.invoice.id) ?? 0;
 
+  /*
+    The notes themselves, not just the total.
+
+    A screen showing only "credited ₹1,180" cannot say the thing that matters
+    since Rule 67B: whether the customer has accepted it. An issued note the
+    customer has ignored has not reduced the tax, and looks identical to one
+    that has.
+  */
+  const notes = await db
+    .select({
+      id: creditNotes.id,
+      number: creditNotes.number,
+      grandTotalPaise: creditNotes.grandTotalPaise,
+      reason: creditNotes.reason,
+      status: creditNotes.status,
+      imsState: creditNotes.imsState,
+      issueDate: creditNotes.issueDate,
+    })
+    .from(creditNotes)
+    .where(and(eq(creditNotes.tenantId, tenantId), eq(creditNotes.invoiceId, row.invoice.id)))
+    .orderBy(asc(creditNotes.createdAt));
+
   const [signOff] = row.jobId
     ? await db
         .select({
@@ -392,6 +414,7 @@ invoiceRoutes.get("/:id", requirePermission("invoice:read"), async (c) => {
     lines,
     paidPaise,
     creditedPaise,
+    creditNotes: notes,
     /* One definition, shared with every other screen that answers this — see
        `lib/receivables.ts` for why it is not six expressions. */
     outstandingPaise: outstandingOf({
