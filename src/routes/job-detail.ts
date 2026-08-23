@@ -32,6 +32,8 @@ import {
   users,
 } from "../db/schema.ts";
 import { apiRouter } from "../lib/router.ts";
+import { creditedAgainst } from "./credit-notes.ts";
+import { outstandingOf } from "../lib/receivables.ts";
 
 export const jobDetailRoutes = apiRouter();
 
@@ -204,8 +206,15 @@ jobDetailRoutes.get("/:id", async (c) => {
         .from(payments)
         .where(and(eq(payments.tenantId, caller.tenantId), eq(payments.invoiceId, invoice[0].id)))
     : [];
+  const creditedOnInvoice = invoice[0]
+    ? (await creditedAgainst(caller.tenantId, [invoice[0].id])).get(invoice[0].id) ?? 0
+    : 0;
   const invoiceOutstanding = invoice[0]
-    ? Math.max(0, invoice[0].grandTotalPaise - Number(collected?.total ?? 0))
+    ? outstandingOf({
+        grandTotalPaise: invoice[0].grandTotalPaise,
+        paidPaise: Number(collected?.total ?? 0),
+        creditedPaise: creditedOnInvoice,
+      })
     : null;
 
   /*

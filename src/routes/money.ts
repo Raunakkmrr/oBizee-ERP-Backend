@@ -28,6 +28,8 @@ import {
   vendors,
 } from "../db/schema.ts";
 import { apiRouter } from "../lib/router.ts";
+import { creditedAgainst } from "./credit-notes.ts";
+import { outstandingOf } from "../lib/receivables.ts";
 
 export const moneyRoutes = apiRouter();
 
@@ -92,8 +94,24 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
   ]);
 
   const paidBy = new Map(paidRows.map((r) => [r.invoiceId, Number(r.paid ?? 0)]));
+  /*
+    Credit notes come off the receivable too.
+
+    Without this the collections list chases a customer for money a credit note
+    has already given back — the most expensive kind of wrong number here,
+    because somebody acts on it by picking up the phone.
+  */
+  const creditedBy = await creditedAgainst(tenantId, issued.map((i) => i.id));
   const unpaid = issued
-    .map((inv) => ({ ...inv, outstanding: inv.grandTotalPaise - (paidBy.get(inv.id) ?? 0) }))
+    .map((inv) => ({
+      ...inv,
+      creditedPaise: creditedBy.get(inv.id) ?? 0,
+      outstanding: outstandingOf({
+        grandTotalPaise: inv.grandTotalPaise,
+        paidPaise: paidBy.get(inv.id) ?? 0,
+        creditedPaise: creditedBy.get(inv.id) ?? 0,
+      }),
+    }))
     .filter((inv) => inv.outstanding > 0);
 
   /*

@@ -5,6 +5,7 @@ import { db } from "../db/client.ts";
 import {
   assets,
   contacts,
+  creditNotes,
   customers,
   invoices,
   jobs,
@@ -16,6 +17,7 @@ import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
 import { e164 } from "../lib/phone.ts";
 import { audit } from "../lib/audit.ts";
+import { outstandingOf } from "../lib/receivables.ts";
 
 /**
  * Customers and their sites — FR-201, FR-202.
@@ -98,13 +100,26 @@ customerRoutes.get("/", requirePermission("customer:read"), async (c) => {
   ]);
 
   const billedBy = new Map(billed.map((r) => [r.customerId, Number(r.total ?? 0)]));
+  /* Issued credit notes, per customer — same scoping as the invoices above. */
+  const creditRows = await db
+    .select({ customerId: creditNotes.customerId, total: sum(creditNotes.grandTotalPaise) })
+    .from(creditNotes)
+    .where(and(eq(creditNotes.tenantId, tenantId), eq(creditNotes.status, "ISSUED")))
+    .groupBy(creditNotes.customerId);
+  const creditedByCustomer = new Map(creditRows.map((r) => [r.customerId, Number(r.total ?? 0)]));
   const paidBy = new Map(received.map((r) => [r.customerId, Number(r.total ?? 0)]));
 
   return c.json({
     customers: rows.map((customer) => ({
       ...customer,
       // Derived, never a stored figure somebody has to keep in step.
-      outstandingPaise: (billedBy.get(customer.id) ?? 0) - (paidBy.get(customer.id) ?? 0),
+      /* Billed, less received, less credited — the same three terms every
+         other screen uses, via `lib/receivables.ts`. */
+      outstandingPaise: outstandingOf({
+        grandTotalPaise: billedBy.get(customer.id) ?? 0,
+        paidPaise: paidBy.get(customer.id) ?? 0,
+        creditedPaise: creditedByCustomer.get(customer.id) ?? 0,
+      }),
       sites: allSites
         .filter((s) => s.customerId === customer.id)
         .map((site) => ({

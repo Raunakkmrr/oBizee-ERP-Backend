@@ -17,6 +17,8 @@ import {
 import { financialYear, formatNumber, nextInSeries } from "../lib/series.ts";
 import { audit } from "../lib/audit.ts";
 import { billablePeriods, type BillingFrequency } from "../lib/billing-periods.ts";
+import { creditedAgainst } from "./credit-notes.ts";
+import { outstandingOf } from "../lib/receivables.ts";
 import { inArray, ne } from "drizzle-orm";
 
 /**
@@ -339,6 +341,8 @@ invoiceRoutes.get("/:id", requirePermission("invoice:read"), async (c) => {
     .orderBy(asc(payments.receivedOn));
 
   const paidPaise = received.reduce((sum, p) => sum + p.amountPaise, 0);
+  /* Credit notes reduce what is owed as surely as a payment does. */
+  const creditedPaise = (await creditedAgainst(tenantId, [row.invoice.id])).get(row.invoice.id) ?? 0;
 
   const [signOff] = row.jobId
     ? await db
@@ -387,10 +391,14 @@ invoiceRoutes.get("/:id", requirePermission("invoice:read"), async (c) => {
     }),
     lines,
     paidPaise,
-    /* Clamped at zero — an overpaid invoice is a credit note nobody raised,
-       and the write path refuses one, so a negative here would be a bug
-       reported as a number. */
-    outstandingPaise: Math.max(0, row.invoice.grandTotalPaise - paidPaise),
+    creditedPaise,
+    /* One definition, shared with every other screen that answers this — see
+       `lib/receivables.ts` for why it is not six expressions. */
+    outstandingPaise: outstandingOf({
+      grandTotalPaise: row.invoice.grandTotalPaise,
+      paidPaise,
+      creditedPaise,
+    }),
     payments: received.map((p) => ({
       id: p.id,
       amountPaise: p.amountPaise,

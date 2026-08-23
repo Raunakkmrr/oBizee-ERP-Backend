@@ -29,6 +29,8 @@ import {
   users,
 } from "../db/schema.ts";
 import { apiRouter } from "../lib/router.ts";
+import { creditedAgainst } from "./credit-notes.ts";
+import { outstandingOf } from "../lib/receivables.ts";
 
 export const homeRoutes = apiRouter();
 
@@ -164,10 +166,16 @@ async function snapshot(tenantId: string) {
         );
 
   const paidBy = new Map(paidRows.map((r) => [r.invoiceId, Number(r.paid ?? 0)]));
+  /* The owner's overdue figure must not include what has been credited back. */
+  const creditedBy = await creditedAgainst(tenantId, openInvoices.map((i) => i.id));
   const overdueRows = openInvoices
     .map((inv) => ({
       ...inv,
-      outstanding: inv.grandTotalPaise - (paidBy.get(inv.id) ?? 0),
+      outstanding: outstandingOf({
+        grandTotalPaise: inv.grandTotalPaise,
+        paidPaise: paidBy.get(inv.id) ?? 0,
+        creditedPaise: creditedBy.get(inv.id) ?? 0,
+      }),
       daysLate: daysBetween(inv.issueDate, now) - inv.creditDays,
     }))
     .filter((inv) => inv.outstanding > 0 && inv.daysLate > 0);

@@ -6,6 +6,8 @@ import { customers, invoices, payments } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
 import { audit } from "../lib/audit.ts";
+import { creditedAgainst } from "./credit-notes.ts";
+import { outstandingOf } from "../lib/receivables.ts";
 
 /**
  * Payments and ageing — FR-901, FR-903.
@@ -62,7 +64,15 @@ paymentRoutes.post(
       .where(eq(payments.invoiceId, invoice.id));
     const paid = Number(already?.total ?? 0);
 
-    if (paid + body.amountPaise > invoice.grandTotalPaise) {
+    /*
+      Credited amounts count against the ceiling too.
+
+      Without this, an invoice part-credited and then paid in full accepts more
+      money than is owed — the overpayment this guard exists to refuse, arriving
+      through the one door it was not watching.
+    */
+    const credited = (await creditedAgainst(caller.tenantId, [invoice.id])).get(invoice.id) ?? 0;
+    if (paid + credited + body.amountPaise > invoice.grandTotalPaise) {
       /*
         Refused rather than accepted and reconciled later. An overpaid invoice
         is a credit note nobody has raised, and it turns up at year end as a
@@ -73,7 +83,12 @@ paymentRoutes.post(
           error: "That is more than the invoice is for",
           invoiceTotalPaise: invoice.grandTotalPaise,
           alreadyPaidPaise: paid,
-          outstandingPaise: invoice.grandTotalPaise - paid,
+          alreadyCreditedPaise: credited,
+          outstandingPaise: outstandingOf({
+            grandTotalPaise: invoice.grandTotalPaise,
+            paidPaise: paid,
+            creditedPaise: credited,
+          }),
         },
         400,
       );
@@ -92,7 +107,11 @@ paymentRoutes.post(
       })
       .returning();
 
-    const outstanding = invoice.grandTotalPaise - (paid + body.amountPaise);
+    const outstanding = outstandingOf({
+      grandTotalPaise: invoice.grandTotalPaise,
+      paidPaise: paid + body.amountPaise,
+      creditedPaise: credited,
+    });
     await audit(
       caller,
       "RECORD_PAYMENT",
@@ -128,13 +147,19 @@ paymentRoutes.get("/receivables", requirePermission("payment:read"), async (c) =
     .where(eq(payments.tenantId, tenantId))
     .groupBy(payments.invoiceId);
   const paidBy = new Map(paidRows.map((p) => [p.invoiceId, Number(p.total ?? 0)]));
+  /* Ageing must not chase what has been credited back. */
+  const creditedBy = await creditedAgainst(tenantId, rows.map((r) => r.id));
 
   const buckets: Record<string, { amountPaise: number; count: number }> = {};
   for (const label of AGEING_BUCKETS) buckets[label] = { amountPaise: 0, count: 0 };
 
   const outstanding = [];
   for (const invoice of rows) {
-    const due = invoice.grandTotalPaise - (paidBy.get(invoice.id) ?? 0);
+    const due = outstandingOf({
+      grandTotalPaise: invoice.grandTotalPaise,
+      paidPaise: paidBy.get(invoice.id) ?? 0,
+      creditedPaise: creditedBy.get(invoice.id) ?? 0,
+    });
     if (due <= 0) continue;
 
     const issued = new Date(`${invoice.issueDate}T00:00:00`);
