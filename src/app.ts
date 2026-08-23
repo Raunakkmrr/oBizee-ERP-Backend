@@ -6,6 +6,7 @@ import { moneyRoutes } from "./routes/money.ts";
 import { jobDetailRoutes } from "./routes/job-detail.ts";
 import { reportRoutes } from "./routes/reports.ts";
 import { peopleRoutes } from "./routes/people.ts";
+import { creditNoteRoutes } from "./routes/credit-notes.ts";
 import { cronRoutes, reminderRoutes } from "./routes/reminders.ts";
 import { settingsRoutes } from "./routes/settings.ts";
 import { partRoutes } from "./routes/parts.ts";
@@ -111,6 +112,7 @@ app.route("/api/advances", advanceRoutes);
 app.route("/api/payments", paymentRoutes);
 app.route("/api/money", moneyRoutes);
 app.route("/api/gst", gstRoutes);
+app.route("/api/credit-notes", creditNoteRoutes);
 app.route("/api/reminders", reminderRoutes);
 // Outside /api: a scheduler carries a shared secret, not a user token.
 app.route("/cron", cronRoutes);
