@@ -228,7 +228,7 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
  * `Remind` and `Log call` existed as buttons with nothing behind them. This is
  * what they now write to; the reminder exclusion reads the same row back.
  */
-moneyRoutes.post("/collections/:invoiceId/contact", requirePermission("payment:write"), async (c) => {
+moneyRoutes.post("/collections/:invoiceId/contact", requirePermission("collection:write"), async (c) => {
   const caller = c.get("caller");
   const invoiceId = c.req.param("invoiceId");
   const body = await c.req.json<{ note?: string; promisedFor?: string | null }>();

@@ -79,6 +79,20 @@ export const PERMISSIONS = [
   "invoice:finalise",
   "payment:read",
   "payment:write",
+  /**
+   * Recording what a customer said when they were chased — FR-904.
+   *
+   * Not `payment:write`, which is what that endpoint guarded on and why a
+   * coordinator was refused. Receiving money and noting a phone call are
+   * different acts with different consequences: one moves the ledger, the other
+   * records a conversation, and the person most likely to have had the
+   * conversation is the one who was already on the phone.
+   *
+   * It still matters who wrote it — an unbroken promise suppresses the next
+   * reminder, so a note is a decision not to chase somebody — which is why this
+   * is a permission at all rather than open to every role.
+   */
+  "collection:write",
   "gst:read",
   "gst:write",
   "export:generate",
@@ -147,6 +161,8 @@ const MATRIX: Record<Role, readonly Permission[]> = {
     "contract:write",
     "invoice:read",
     "payment:read",
+    // Chasing is not banking: the coordinator is usually the one on the phone.
+    "collection:write",
     "part:read",
     "part:issue_to_van",
     "price:view_selling",
@@ -213,6 +229,7 @@ const MATRIX: Record<Role, readonly Permission[]> = {
     "invoice:finalise",
     "payment:read",
     "payment:write",
+    "collection:write",
     "gst:read",
     "gst:write",
     "export:generate",
