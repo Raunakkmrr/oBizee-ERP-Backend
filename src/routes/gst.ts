@@ -2,7 +2,7 @@ import { zBody, zParam, zQuery } from "../lib/validate.ts";
 import { z } from "zod";
 import { and, eq, gte, lte } from "drizzle-orm";
 import { db } from "../db/client.ts";
-import { branches, customers, gstr9Filings, invoiceLines, invoices, tenants } from "../db/schema.ts";
+import { branches, creditNotes, customers, gstr9Filings, invoiceLines, invoices, tenants } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
 import { apiRouter } from "../lib/router.ts";
 import { audit } from "../lib/audit.ts";
@@ -78,7 +78,8 @@ const READINESS_HREF: Record<ReadinessKind, string> = {
   MISSING_CODE: "/invoices?filter=missing-code",
   OVERRIDDEN_POS: "/invoices?filter=pos-override",
   UNADJUSTED_ADVANCE: "/money?tab=advances",
-  CREDIT_NOTE: "/invoices?filter=credit-notes",
+  /* A real screen, not a filter that never existed. */
+  CREDIT_NOTE: "/money/credit-notes",
   RCM_INWARD: "/purchases?filter=rcm",
   PENDING_IRN: "/invoices?filter=pending-irn",
   B2C_SMALL: "/gst?table=b2cs",
@@ -149,9 +150,49 @@ export async function gstPeriod(tenantId: string, period: string) {
     const tables: Record<string, Table> = {
       B2B: { code: "B2B", label: "Registered customers", documents: 0, taxablePaise: 0, taxPaise: 0, failed: false },
       B2CS: { code: "B2CS", label: "Unregistered, summary", documents: 0, taxablePaise: 0, taxPaise: 0, failed: false },
+      /*
+        Credit notes, split the way GSTR-1 splits them: CDNR against a
+        registered recipient, CDNUR against an unregistered one.
+
+        They were absent entirely, so a credit note could be raised, tracked and
+        watched against its deadline — and never reach the return. The output
+        tax it exists to reduce stayed with the government, which makes the
+        whole instrument decorative.
+      */
+      CDNR: { code: "CDNR", label: "Credit notes, registered", documents: 0, taxablePaise: 0, taxPaise: 0, failed: false },
+      CDNUR: { code: "CDNUR", label: "Credit notes, unregistered", documents: 0, taxablePaise: 0, taxPaise: 0, failed: false },
     };
 
     // Counted by kind, so the checklist can say "4 invoices" and link to them.
+    /*
+      Credit notes issued in the period, with the recipient's GSTIN so they can
+      be split CDNR from CDNUR.
+
+      Reported whether or not the customer has accepted them: GSTR-1 declares
+      the document, and it is the *liability reduction* that waits on IMS
+      acceptance under Rule 67B. Conflating the two would either hide a document
+      that must be declared, or claim a reduction that has not happened.
+    */
+    const notesInPeriod = await db
+      .select({
+        number: creditNotes.number,
+        issueDate: creditNotes.issueDate,
+        taxablePaise: creditNotes.taxablePaise,
+        totalTaxPaise: creditNotes.totalTaxPaise,
+        imsState: creditNotes.imsState,
+        customerGstin: customers.gstin,
+      })
+      .from(creditNotes)
+      .innerJoin(customers, eq(creditNotes.customerId, customers.id))
+      .where(
+        and(
+          eq(creditNotes.tenantId, tenantId),
+          eq(creditNotes.status, "ISSUED"),
+          gte(creditNotes.issueDate, from),
+          lte(creditNotes.issueDate, to),
+        ),
+      );
+
     const unresolved: Record<ReadinessKind, number> = {
       MISSING_CODE: 0,
       OVERRIDDEN_POS: 0,
@@ -267,6 +308,23 @@ export async function gstPeriod(tenantId: string, period: string) {
         ).toFixed(2)} — one of them is wrong`,
         href: "/api/gst",
       });
+    }
+
+    /*
+      The credit notes into their tables, and the unaccepted ones onto the
+      checklist.
+
+      A note that is reported but not yet accepted is the case worth flagging:
+      the document is in the return, and the liability it was meant to reduce is
+      still standing. Somebody has to chase the customer's portal before the
+      next GSTR-3B, and nothing else on this screen would say so.
+    */
+    for (const note of notesInPeriod) {
+      const bucket = note.customerGstin ? tables.CDNR! : tables.CDNUR!;
+      bucket.documents += 1;
+      bucket.taxablePaise += note.taxablePaise;
+      bucket.taxPaise += note.totalTaxPaise;
+      if (note.imsState !== "ACCEPTED") unresolved.CREDIT_NOTE += 1;
     }
 
     const readiness = READINESS_KINDS.filter((kind) => unresolved[kind] > 0).map((kind) => ({
