@@ -1,6 +1,6 @@
 import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
-import { and, asc, count, eq } from "drizzle-orm";
+import { and, asc, count, eq, sum } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import {
   branches, contracts, contractSchedules, creditNotes, customers, invoiceLines, invoices, jobs, payments, signOffs, sites, tenants, users,
@@ -443,6 +443,20 @@ const createInvoice = z
         board cannot explain, so ad-hoc is explicit rather than implied. */
     jobId: z.string().uuid().optional(),
     contractId: z.string().uuid().optional(),
+    /**
+     * "Yes, I know they already owe us, and this is different work."
+     *
+     * An ad-hoc invoice carries no job and no contract, so nothing links it to
+     * anything — which is exactly the door the second-invoice-for-the-balance
+     * habit walks through. The table already refuses a duplicate against a job
+     * (`invoices_job_uq`) or a contract point; this is the one shape it cannot
+     * see.
+     *
+     * Refused by default rather than warned about, so another client cannot
+     * bypass it, and acknowledged explicitly rather than silently, so the
+     * decision is somebody's rather than the software's.
+     */
+    acknowledgedUnpaid: z.boolean().optional(),
     contractPoint: z.number().int().positive().optional(),
     /**
      * Which slice of the contract this settles — FR-505.
@@ -513,6 +527,90 @@ invoiceRoutes.post(
     }
 
     if (!customerId) return c.json({ error: "No customer to bill" }, 400);
+
+    /*
+      A second invoice for a balance is not a second supply.
+
+      This is the expensive habit the whole credit-note work exists to replace:
+      a customer part-pays, asks for "a new invoice" for the rest, and gets one
+      — so the same work is declared twice and roughly 50% more GST than was
+      ever owed goes to the government.
+
+      Only ad-hoc invoices reach here unguarded. One against a job or a contract
+      point is already impossible at the table. So the check is narrow on
+      purpose: a genuinely new repair for a customer who owes money on an AMC is
+      ordinary business and must not be blocked — which is why this refuses once
+      and then takes yes for an answer.
+    */
+    if (!jobId && !contractId && !body.acknowledgedUnpaid) {
+      const openRows = await db
+        .select({
+          id: invoices.id,
+          number: invoices.number,
+          grandTotalPaise: invoices.grandTotalPaise,
+          issueDate: invoices.issueDate,
+        })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.tenantId, caller.tenantId),
+            eq(invoices.customerId, customerId),
+            eq(invoices.status, "ISSUED"),
+          ),
+        );
+
+      if (openRows.length > 0) {
+        const paidRows = await db
+          .select({ invoiceId: payments.invoiceId, total: sum(payments.amountPaise) })
+          .from(payments)
+          .where(
+            and(
+              eq(payments.tenantId, caller.tenantId),
+              inArray(
+                payments.invoiceId,
+                openRows.map((r) => r.id),
+              ),
+            ),
+          )
+          .groupBy(payments.invoiceId);
+        const paidBy = new Map(paidRows.map((r) => [r.invoiceId, Number(r.total ?? 0)]));
+        const creditedBy = await creditedAgainst(
+          caller.tenantId,
+          openRows.map((r) => r.id),
+        );
+
+        const unpaid = openRows
+          .map((r) => ({
+            number: r.number,
+            issueDate: r.issueDate,
+            outstandingPaise: outstandingOf({
+              grandTotalPaise: r.grandTotalPaise,
+              paidPaise: paidBy.get(r.id) ?? 0,
+              creditedPaise: creditedBy.get(r.id) ?? 0,
+            }),
+          }))
+          .filter((r) => r.outstandingPaise > 0);
+
+        if (unpaid.length > 0) {
+          return c.json(
+            {
+              error:
+                "That customer already has an unpaid invoice. If this is the balance of it, a second invoice taxes the same work twice.",
+              /* Named, so the refusal is a fork rather than a wall. */
+              exits: [
+                "Record the payment they have made against the original invoice",
+                "Send a payment request quoting the original number — it carries no GST",
+                "Raise a credit note if the value is genuinely coming down",
+                "Say this is different work, and it will be raised",
+              ],
+              unpaid,
+              needsAcknowledgement: true,
+            },
+            409,
+          );
+        }
+      }
+    }
 
     const resolved = await resolveBillTo(caller.tenantId, customerId, siteId);
     if (!resolved) {
