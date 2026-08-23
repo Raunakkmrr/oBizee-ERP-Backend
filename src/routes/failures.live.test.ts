@@ -377,6 +377,14 @@ describe.skipIf(!reachable)("how the API refuses", () => {
         await post("/api/invoices", {
           customerId: c.id,
           siteId: c.sites[0]!.id,
+          /*
+            These probes are deliberately independent documents, not the balance
+            of one another — which is what the unlinked-invoice guard asks. It
+            refused them from the second run onward, once the harness customer
+            had an unpaid invoice of its own, and saying so is the honest answer
+            rather than weakening the guard for the tests' convenience.
+          */
+          acknowledgedUnpaid: true,
           lines: [
             { description: "series probe", code: "9987", kind: "service", qty: 1, ratePaise: 100_00, ratePercent: 18 },
           ],
