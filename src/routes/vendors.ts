@@ -1,6 +1,6 @@
 import { zBody } from "../lib/validate.ts";
 import { z } from "zod";
-import { and, asc, eq, sum } from "drizzle-orm";
+import { and, asc, eq, gte, lte, sum } from "drizzle-orm";
 import { db } from "../db/client.ts";
 import { purchaseBills, vendors } from "../db/schema.ts";
 import { requirePermission, type AppEnv } from "../auth/context.ts";
@@ -9,6 +9,7 @@ import {
   adviseTds, billTotals, clockFor, msmedApplies, reverseChargeFor, suggestSection,
 } from "../lib/purchases.ts";
 import { audit } from "../lib/audit.ts";
+import { financialYear } from "../lib/series.ts";
 
 /**
  * Vendors and inward bills — FR-705, FR-807, FR-905, FR-906.
@@ -123,12 +124,33 @@ vendorRoutes.post(
       .limit(1);
     if (!vendor) return c.json({ error: "No such vendor" }, 404);
 
-    // The year's running total with this vendor decides whether the §194C
-    // thresholds have been crossed at all.
+    /*
+      The *year's* running total, which is what §194C actually asks about.
+
+      This summed every bill ever raised against the vendor. `adviseTds` then
+      compared that lifetime figure against an annual ₹1,00,000 threshold, so a
+      vendor billed ₹60,000 last year and ₹50,000 this year was treated as
+      having crossed it — and TDS was deducted on a bill that owed none. The
+      error runs one way, toward over-deduction: money withheld from a vendor
+      who is entitled to it, and over-reported in the TDS return.
+
+      1 April to 31 March, from `financialYear`, so this agrees with every other
+      year boundary in the product rather than inventing a second one.
+    */
+    const fy = financialYear(new Date());
+    const yearStart = `${fy}-04-01`;
+    const yearEnd = `${fy + 1}-03-31`;
     const [paid] = await db
       .select({ total: sum(purchaseBills.taxablePaise) })
       .from(purchaseBills)
-      .where(and(eq(purchaseBills.tenantId, caller.tenantId), eq(purchaseBills.vendorId, vendor.id)));
+      .where(
+        and(
+          eq(purchaseBills.tenantId, caller.tenantId),
+          eq(purchaseBills.vendorId, vendor.id),
+          gte(purchaseBills.billDate, yearStart),
+          lte(purchaseBills.billDate, yearEnd),
+        ),
+      );
 
     const section = body.tdsSection ?? suggestSection(body.description);
     const tds = adviseTds(section, body.taxablePaise, vendor, Number(paid?.total ?? 0));
