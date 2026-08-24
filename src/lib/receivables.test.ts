@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { creditableRemaining, isSettled, outstandingOf } from "./receivables.ts";
+import { creditableRemaining, isSettled, outstandingOf, taxOnUncollected } from "./receivables.ts";
 
 describe("what is owed", () => {
   it("is the invoice less what came in", () => {
@@ -64,6 +64,51 @@ describe("the refund case this cannot yet express", () => {
     */
     expect(
       outstandingOf({ grandTotalPaise: 7_080_00, paidPaise: 7_080_00, creditedPaise: 1_180_00 }),
+    ).toBe(0);
+  });
+});
+
+describe("GST paid on money that never arrived", () => {
+  it("is the whole tax when nothing has been collected", () => {
+    expect(
+      taxOnUncollected({ grandTotalPaise: 7_080_00, totalTaxPaise: 1_080_00, outstandingPaise: 7_080_00 }),
+    ).toBe(1_080_00);
+  });
+
+  it("is nothing once the invoice is settled", () => {
+    expect(
+      taxOnUncollected({ grandTotalPaise: 7_080_00, totalTaxPaise: 1_080_00, outstandingPaise: 0 }),
+    ).toBe(0);
+  });
+
+  it("apportions a part payment across the whole document", () => {
+    /*
+      ₹4,000 of ₹7,080 collected leaves ₹3,080 outstanding — 43.5% of the
+      invoice — so 43.5% of the ₹1,080 tax sits against money not received.
+
+      Deliberately NOT "the tax on the unpaid part": a payment is not earmarked
+      to particular lines, and treating the first rupees in as taxable value and
+      the last as tax is a fiction that gives a different answer if reversed.
+    */
+    const exposure = taxOnUncollected({
+      grandTotalPaise: 7_080_00,
+      totalTaxPaise: 1_080_00,
+      outstandingPaise: 3_080_00,
+    });
+    expect(exposure).toBe(46_983);
+    expect(exposure).toBeLessThan(1_080_00);
+  });
+
+  it("cannot exceed the tax actually charged", () => {
+    // Defensive: a bad outstanding figure must not invent tax that was never paid.
+    expect(
+      taxOnUncollected({ grandTotalPaise: 1_000_00, totalTaxPaise: 180_00, outstandingPaise: 5_000_00 }),
+    ).toBe(180_00);
+  });
+
+  it("says nothing about an invoice worth nothing", () => {
+    expect(
+      taxOnUncollected({ grandTotalPaise: 0, totalTaxPaise: 0, outstandingPaise: 0 }),
     ).toBe(0);
   });
 });

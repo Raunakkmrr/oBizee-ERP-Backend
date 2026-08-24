@@ -436,7 +436,18 @@ describe.skipIf(!reachable)("how the API refuses", () => {
       expect((await post(`/api/invoices/${d.id}/issue`, {})).status).toBe(409);
     });
 
-    it("refuses to cancel an invoice with payments against it", async () => {
+    /*
+      Four sequential round trips — draft, issue, pay, cancel — against a
+      serverless database, and each of those paths gained a query when credit
+      notes arrived: the payment guard now checks what has been credited, and
+      ad-hoc creation checks whether the customer already owes.
+
+      So the default five seconds became a coin toss. Raised for this test with
+      the reason, rather than globally: a suite that times out at random teaches
+      people to re-run it until it passes, which is how a real failure gets
+      waved through.
+    */
+    it("refuses to cancel an invoice with payments against it", { timeout: 20_000 }, async () => {
       const d = await draft();
       const issued = (await (await post(`/api/invoices/${d.id}/issue`, {})).json()) as { id: string };
       await post("/api/payments", {

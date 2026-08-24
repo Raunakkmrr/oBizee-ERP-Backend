@@ -76,3 +76,36 @@ export function creditableRemaining(input: {
 }): number {
   return Math.max(0, input.grandTotalPaise - input.creditedPaise);
 }
+
+/**
+ * How much GST has been paid on money that has not arrived.
+ *
+ * **The number Raunak asked about first**, and one nothing in the product could
+ * answer: *"the company fills out the GST of the bills which are not yet
+ * totally paid… paying for the money which never showed up."*
+ *
+ * The tax was paid in full when the invoice was issued — §13(2) makes the whole
+ * liability fall due then, whatever has been collected. So the share of it
+ * sitting against uncollected money is the tax apportioned to the outstanding
+ * balance.
+ *
+ * **Apportioned, not "the tax on the unpaid part".** A part-payment is not
+ * earmarked to particular lines; a customer paying ₹4,000 of ₹7,080 has paid
+ * ₹4,000 of the whole thing, tax included. Treating the first rupees received
+ * as taxable value and the last as tax — or the reverse — would be a fiction
+ * either way, and would give a different answer depending on which.
+ *
+ * ⚠️ This is exposure, not a refund. Recovering it needs a credit note inside
+ * the §34(2) window and the customer's acceptance under Rule 67B; where the
+ * money is simply late rather than lost, the right answer is to collect it.
+ * The CA confirms the treatment.
+ */
+export function taxOnUncollected(input: {
+  grandTotalPaise: number;
+  totalTaxPaise: number;
+  outstandingPaise: number;
+}): number {
+  if (input.grandTotalPaise <= 0) return 0;
+  const share = Math.min(1, input.outstandingPaise / input.grandTotalPaise);
+  return Math.round(input.totalTaxPaise * share);
+}

@@ -29,7 +29,7 @@ import {
 } from "../db/schema.ts";
 import { apiRouter } from "../lib/router.ts";
 import { creditedAgainst } from "./credit-notes.ts";
-import { outstandingOf } from "../lib/receivables.ts";
+import { outstandingOf, taxOnUncollected } from "../lib/receivables.ts";
 
 export const moneyRoutes = apiRouter();
 
@@ -63,6 +63,8 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
         number: invoices.number,
         issueDate: invoices.issueDate,
         grandTotalPaise: invoices.grandTotalPaise,
+        // For the exposure figure: the tax was paid in full at issue.
+        totalTaxPaise: invoices.totalTaxPaise,
         customerId: invoices.customerId,
         siteId: invoices.siteId,
         customer: customers.name,
@@ -186,6 +188,18 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
       */
       billedPaise: inv.grandTotalPaise,
       paidPaise: paidBy.get(inv.id) ?? 0,
+      /*
+        The tax already handed over against this uncollected money.
+
+        §13(2) made the whole liability fall due when the invoice was issued,
+        whatever had been collected — so this is the share of it sitting against
+        money that has not arrived.
+      */
+      taxOnUncollectedPaise: taxOnUncollected({
+        grandTotalPaise: inv.grandTotalPaise,
+        totalTaxPaise: inv.totalTaxPaise,
+        outstandingPaise: inv.outstanding,
+      }),
       lastContact: note ? `${shortWord(note.occurredAt)} — ${note.note}` : null,
       phone:
         (inv.siteId ? phoneBySite.get(inv.siteId) : undefined) ??
@@ -232,8 +246,22 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
     .filter((d): d is string => d !== null)
     .sort();
 
+  /*
+    The number the firm asked about first, and nothing could answer: how much
+    GST has been paid on money that never showed up.
+
+    Totalled here rather than in the browser so every screen that shows it shows
+    the same figure — and because it is the one number that makes the whole
+    problem visible in a single line.
+  */
+  const taxOnUncollectedPaise = receivables.reduce(
+    (sum, r) => sum + r.taxOnUncollectedPaise,
+    0,
+  );
+
   return c.json({
     receivables,
+    taxOnUncollectedPaise,
     payables,
     dueNext15Paise,
     udyamVerifiedAsOf: verified.length > 0 ? dateWord(verified[0]!) : null,
