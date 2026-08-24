@@ -17,11 +17,16 @@
  * not silently passed.
  */
 import { sql } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it , vi } from "vitest";
 
 import { adminDb as db } from "../db/client.ts";
 import { databaseIsLive } from "../db/live.ts";
 import { branches, tenants } from "../db/schema.ts";
+import { LIVE_TIMEOUT_MS } from "../test/live-timeout.ts";
+
+/* Sequential HTTP round trips against a serverless database — see the note
+   on LIVE_TIMEOUT_MS. The strict default belongs to the pure tests. */
+vi.setConfig({ testTimeout: LIVE_TIMEOUT_MS });
 
 /* A database that answers, not a string that exists — see db/live.ts. */
 const live = databaseIsLive;

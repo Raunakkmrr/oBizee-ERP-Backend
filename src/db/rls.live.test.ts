@@ -14,11 +14,16 @@
  * itself off while everything still appears to work.
  */
 import { sql } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it , vi } from "vitest";
 
 import { adminDb, db, withTenant } from "./client.ts";
 import { databaseIsLive } from "./live.ts";
 import { customers, tenants } from "./schema.ts";
+import { LIVE_TIMEOUT_MS } from "../test/live-timeout.ts";
+
+/* Sequential HTTP round trips against a serverless database — see the note
+   on LIVE_TIMEOUT_MS. The strict default belongs to the pure tests. */
+vi.setConfig({ testTimeout: LIVE_TIMEOUT_MS });
 
 /* Probed once in live.ts rather than per file. */
 const reachable = databaseIsLive;

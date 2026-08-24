@@ -30,6 +30,7 @@ import {
 import { apiRouter } from "../lib/router.ts";
 import { creditedAgainst } from "./credit-notes.ts";
 import { outstandingOf, taxOnUncollected } from "../lib/receivables.ts";
+import { itcReversal } from "../lib/itc-reversal.ts";
 
 export const moneyRoutes = apiRouter();
 
@@ -55,6 +56,8 @@ function daysBetween(from: string, to: Date): number {
 moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
   const { tenantId } = c.get("caller");
   const now = new Date();
+  /* The day in the only timezone this product operates in. */
+  const nowIso = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
   const [issued, paidRows, billRows] = await Promise.all([
     db
@@ -69,6 +72,9 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
         siteId: invoices.siteId,
         customer: customers.name,
         creditDays: customers.creditDays,
+        // Rule 37 only bites a registered customer: no GSTIN, no credit to
+        // reverse, and threatening them with one would be wrong.
+        customerGstin: customers.gstin,
       })
       .from(invoices)
       .innerJoin(customers, eq(invoices.customerId, customers.id))
@@ -199,6 +205,25 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
         grandTotalPaise: inv.grandTotalPaise,
         totalTaxPaise: inv.totalTaxPaise,
         outstandingPaise: inv.outstanding,
+      }),
+      /*
+        When the customer's own credit turns against them — Rule 37.
+
+        The strongest lever a small supplier has and the one nobody uses: at day
+        180 an unpaid invoice costs the *customer* their input tax credit plus
+        interest. That is a fact about their books, so their finance team acts
+        on it in a way they never act on a reminder.
+      */
+      itcReversal: itcReversal({
+        invoiceIssueDate: inv.issueDate,
+        customerGstin: inv.customerGstin,
+        outstandingPaise: inv.outstanding,
+        taxOnUncollectedPaise: taxOnUncollected({
+          grandTotalPaise: inv.grandTotalPaise,
+          totalTaxPaise: inv.totalTaxPaise,
+          outstandingPaise: inv.outstanding,
+        }),
+        today: nowIso,
       }),
       lastContact: note ? `${shortWord(note.occurredAt)} — ${note.note}` : null,
       phone:

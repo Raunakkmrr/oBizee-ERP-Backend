@@ -20,12 +20,17 @@
  * Skipped when the server is not running, so `vitest run` stays green offline.
  */
 import { sql } from "drizzle-orm";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it , vi } from "vitest";
 
 import { ensureProbeTenant } from "../test/probe-tenant.ts";
 
 import { adminDb as db } from "../db/client.ts";
 import { apiIsLive } from "../db/live.ts";
+import { LIVE_TIMEOUT_MS } from "../test/live-timeout.ts";
+
+/* Sequential HTTP round trips against a serverless database — see the note
+   on LIVE_TIMEOUT_MS. The strict default belongs to the pure tests. */
+vi.setConfig({ testTimeout: LIVE_TIMEOUT_MS });
 
 const BASE = process.env.API_URL ?? "http://localhost:8787";
 
@@ -436,18 +441,7 @@ describe.skipIf(!reachable)("how the API refuses", () => {
       expect((await post(`/api/invoices/${d.id}/issue`, {})).status).toBe(409);
     });
 
-    /*
-      Four sequential round trips — draft, issue, pay, cancel — against a
-      serverless database, and each of those paths gained a query when credit
-      notes arrived: the payment guard now checks what has been credited, and
-      ad-hoc creation checks whether the customer already owes.
-
-      So the default five seconds became a coin toss. Raised for this test with
-      the reason, rather than globally: a suite that times out at random teaches
-      people to re-run it until it passes, which is how a real failure gets
-      waved through.
-    */
-    it("refuses to cancel an invoice with payments against it", { timeout: 20_000 }, async () => {
+    it("refuses to cancel an invoice with payments against it", async () => {
       const d = await draft();
       const issued = (await (await post(`/api/invoices/${d.id}/issue`, {})).json()) as { id: string };
       await post("/api/payments", {
