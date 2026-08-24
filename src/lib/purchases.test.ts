@@ -128,7 +128,7 @@ describe("FR-807 — reverse charge is flagged, not computed silently", () => {
   });
 });
 
-describe("FR-905 — the §43B(h) clock, on real bills", () => {
+describe("FR-905 — the §37(2)(g) clock, on real bills", () => {
   it("gives 45 days with a written agreement and 15 without", () => {
     expect(msmedApplies(vendor({ hasWrittenAgreement: true }))).toEqual({
       applies: true,

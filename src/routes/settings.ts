@@ -35,7 +35,14 @@ settingsRoutes.get("/profile", requirePermission("settings:read"), async (c) => 
   const { tenantId } = c.get("caller");
 
   const [firm] = await db
-    .select({ businessName: tenants.businessName, legalName: tenants.legalName })
+    .select({
+      businessName: tenants.businessName,
+      legalName: tenants.legalName,
+      msmeClass: tenants.msmeClass,
+      udyamNumber: tenants.udyamNumber,
+      udyamActivity: tenants.udyamActivity,
+      udyamVerifiedOn: tenants.udyamVerifiedOn,
+    })
     .from(tenants)
     .where(eq(tenants.id, tenantId))
     .limit(1);
@@ -55,6 +62,10 @@ settingsRoutes.get("/profile", requirePermission("settings:read"), async (c) => 
   return c.json({
     businessName: firm.businessName,
     legalName: firm.legalName,
+    msmeClass: firm.msmeClass,
+    udyamNumber: firm.udyamNumber,
+    udyamActivity: firm.udyamActivity,
+    udyamVerifiedOn: firm.udyamVerifiedOn,
     branch: branch ?? null,
   });
 });
@@ -127,6 +138,66 @@ settingsRoutes.patch(
       caller,
       "RENAME_FIRM",
       `Renamed the firm from ${before.legalName} to ${updated!.legalName}`,
+      { table: "tenants", id: caller.tenantId },
+    );
+
+    return c.json(updated);
+  },
+);
+
+/**
+ * The firm's own Udyam registration — the other side of §37(2)(g).
+ *
+ * `vendors.ts` already collects this about every supplier, because paying a
+ * registered micro or small enterprise late costs the *buyer* the deduction.
+ * The same clock runs against this firm's own corporate customers if the firm
+ * is itself one of those enterprises — and nothing can compute that until the
+ * firm says so. `UNVERIFIED`, the default every tenant starts with, means the
+ * lever stays off rather than guessing.
+ *
+ * A separate endpoint from `/profile` rather than folded into it: renaming the
+ * firm and declaring its own MSMED status are unrelated changes with
+ * unrelated audit stories, and a merged refine-and-patch invites the one
+ * updating the other by accident.
+ */
+settingsRoutes.patch(
+  "/profile/msmed",
+  requirePermission("settings:write"),
+  zBody(
+    z.object({
+      msmeClass: z.enum(["MICRO", "SMALL", "MEDIUM", "NOT_REGISTERED", "UNVERIFIED"]),
+      udyamNumber: z.string().trim().min(1).nullable(),
+      udyamActivity: z.enum(["MANUFACTURING", "SERVICE", "TRADING"]).nullable(),
+    }),
+  ),
+  async (c) => {
+    const caller = c.get("caller");
+    const body = c.req.valid("json");
+
+    const [updated] = await db
+      .update(tenants)
+      .set({
+        msmeClass: body.msmeClass,
+        udyamNumber: body.udyamNumber,
+        udyamActivity: body.udyamActivity,
+        // Set the moment the firm tells us — a status without a date is a
+        // claim the screen cannot defend, same as a vendor's.
+        udyamVerifiedOn: new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }),
+      })
+      .where(eq(tenants.id, caller.tenantId))
+      .returning({
+        msmeClass: tenants.msmeClass,
+        udyamNumber: tenants.udyamNumber,
+        udyamActivity: tenants.udyamActivity,
+        udyamVerifiedOn: tenants.udyamVerifiedOn,
+      });
+
+    if (!updated) return c.json({ error: "No such firm" }, 404);
+
+    await audit(
+      caller,
+      "SET_FIRM_MSMED",
+      `Recorded the firm's own Udyam status as ${body.msmeClass}`,
       { table: "tenants", id: caller.tenantId },
     );
 

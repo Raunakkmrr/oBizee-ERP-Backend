@@ -67,6 +67,20 @@ export const tenants = pgTable("tenants", {
   regionalLanguage: text("regional_language"),
   /** FR-1301's per-tenant overrides — technician price visibility and friends. */
   toggles: jsonb("toggles").notNull().default({}),
+  /**
+   * The firm's own Udyam registration — the other side of §37(2)(g).
+   *
+   * `purchases.ts` already asks this about every vendor, because paying a
+   * registered micro or small enterprise late costs the *buyer* their
+   * deduction. The firm is itself a service business and may be one of those
+   * enterprises, in which case the same clock runs against its own corporate
+   * customers. Nothing can say so until the firm does — `UNVERIFIED` is the
+   * honest default, not an assumption either way.
+   */
+  msmeClass: e.msmeClassEnum("msme_class").notNull().default("UNVERIFIED"),
+  udyamNumber: text("udyam_number"),
+  udyamActivity: e.udyamActivityEnum("udyam_activity"),
+  udyamVerifiedOn: date("udyam_verified_on"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -150,6 +164,13 @@ export const customers = pgTable(
     gstin: text("gstin"),
     billingStateCode: text("billing_state_code").notNull(),
     creditDays: integer("credit_days").notNull().default(0),
+    /**
+     * §15 MSMED: with a written agreement on payment terms the firm's own
+     * §37(2)(g) clock against this customer runs 45 days, without one 15.
+     * Defaults false — the shorter, more urgent clock — because assuming an
+     * agreement exists when none does is the wrong direction to be wrong in.
+     */
+    hasWrittenAgreement: boolean("has_written_agreement").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("customers_tenant_idx").on(t.tenantId)],
@@ -739,7 +760,7 @@ export const purchaseBills = pgTable(
     vendorName: text("vendor_name").notNull(),
     /** Theirs, not ours. This is an inward document. */
     vendorBillNumber: text("vendor_bill_number").notNull(),
-    /** FR-905: this date starts the §43B(h) clock. */
+    /** FR-905: this date starts the §37(2)(g) clock. */
     billDate: date("bill_date").notNull(),
     description: text("description").notNull(),
     taxablePaise: money("taxable_paise").notNull(),

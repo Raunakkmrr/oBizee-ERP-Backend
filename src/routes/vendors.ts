@@ -279,7 +279,7 @@ vendorRoutes.get("/bills", requirePermission("payment:read"), async (c) => {
 });
 
 /**
- * Settle a purchase bill — the §43B(h) clock stops here.
+ * Settle a purchase bill — the §37(2)(g) clock stops here.
  *
  * There was no route for this at all: the money screen removed a paid bill
  * from a browser array and nothing reached the ledger, so the deduction clock

@@ -259,7 +259,12 @@ export function daysSince(billDateIso: string, now: Date): number {
 }
 
 /**
- * The §43B(h) position for a recorded bill — FR-905, now on real data.
+ * The §37(2)(g) position for a recorded bill — FR-905, now on real data.
+ *
+ * §37(2)(g) of the Income-tax Act 2025 is the successor to §43B(h) of the
+ * 1961 Act, in force from 1 April 2026 — which is now. Same rule, same 15/45
+ * day MSMED clock, new section number; this codebase used the old citation
+ * until the number itself became wrong, not just outdated.
  *
  * Deliberately mirrors `money.ts`'s `Countdown` union: "lapsed" is a different
  * shape from "counting" because paying today still saves the deduction in one

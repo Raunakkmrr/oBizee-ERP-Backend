@@ -1,10 +1,10 @@
 /**
- * Money — collections and the §43B(h) payables clock. PRD §6.12.
+ * Money — collections and the §37(2)(g) payables clock. PRD §6.12.
  *
  * Two lists that look alike and are not. Receivables are a **chase list**: the
  * rows exist so somebody makes a phone call, which is why each carries a number
  * and the last thing that was said. Payables are a **deadline list**: the rows
- * exist because §43B(h) removes the deduction for the whole financial year if
+ * exist because §37(2)(g) removes the deduction for the whole financial year if
  * an MSME supplier is paid late, and no payment afterwards brings it back.
  *
  * Both are served composed rather than as raw invoice and bill rows. The
@@ -25,12 +25,14 @@ import {
   payments,
   purchaseBills,
   sites,
+  tenants,
   vendors,
 } from "../db/schema.ts";
 import { apiRouter } from "../lib/router.ts";
 import { creditedAgainst } from "./credit-notes.ts";
 import { outstandingOf, taxOnUncollected } from "../lib/receivables.ts";
 import { itcReversal } from "../lib/itc-reversal.ts";
+import { customerDeductionRisk } from "../lib/deduction-risk.ts";
 
 export const moneyRoutes = apiRouter();
 
@@ -59,7 +61,7 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
   /* The day in the only timezone this product operates in. */
   const nowIso = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 
-  const [issued, paidRows, billRows] = await Promise.all([
+  const [issued, paidRows, billRows, tenantRow] = await Promise.all([
     db
       .select({
         id: invoices.id,
@@ -68,6 +70,7 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
         grandTotalPaise: invoices.grandTotalPaise,
         // For the exposure figure: the tax was paid in full at issue.
         totalTaxPaise: invoices.totalTaxPaise,
+        taxablePaise: invoices.taxablePaise,
         customerId: invoices.customerId,
         siteId: invoices.siteId,
         customer: customers.name,
@@ -75,6 +78,8 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
         // Rule 37 only bites a registered customer: no GSTIN, no credit to
         // reverse, and threatening them with one would be wrong.
         customerGstin: customers.gstin,
+        // §37(2)(g) on our own agreement with this customer, not the vendor side's.
+        customerHasWrittenAgreement: customers.hasWrittenAgreement,
       })
       .from(invoices)
       .innerJoin(customers, eq(invoices.customerId, customers.id))
@@ -99,7 +104,16 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
       .from(purchaseBills)
       .innerJoin(vendors, eq(purchaseBills.vendorId, vendors.id))
       .where(and(eq(purchaseBills.tenantId, tenantId), eq(purchaseBills.status, "UNPAID"))),
+    db
+      .select({ msmeClass: tenants.msmeClass, udyamActivity: tenants.udyamActivity })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1),
   ]);
+
+  // Always exactly one row for a real tenant; UNVERIFIED if somehow absent,
+  // which keeps the §37(2)(g) lever off rather than guessing.
+  const tenantMsmed = tenantRow[0] ?? { msmeClass: "UNVERIFIED" as const, udyamActivity: null };
 
   const paidBy = new Map(paidRows.map((r) => [r.invoiceId, Number(r.paid ?? 0)]));
   /*
@@ -223,6 +237,23 @@ moneyRoutes.get("/overview", requirePermission("payment:read"), async (c) => {
           totalTaxPaise: inv.totalTaxPaise,
           outstandingPaise: inv.outstanding,
         }),
+        today: nowIso,
+      }),
+      /*
+        The other side of the same clock — §37(2)(g).
+
+        Rule 37 only bites a registered customer who claimed GST credit. This
+        one bites *any* customer computing business income, GST-registered or
+        not, if this firm is itself a registered micro or small enterprise:
+        pay late and the whole expense is disallowed for the year.
+      */
+      deductionRisk: customerDeductionRisk({
+        invoiceIssueDate: inv.issueDate,
+        outstandingPaise: inv.outstanding,
+        grandTotalPaise: inv.grandTotalPaise,
+        taxableValuePaise: inv.taxablePaise,
+        tenant: tenantMsmed,
+        customerHasWrittenAgreement: inv.customerHasWrittenAgreement,
         today: nowIso,
       }),
       lastContact: note ? `${shortWord(note.occurredAt)} — ${note.note}` : null,

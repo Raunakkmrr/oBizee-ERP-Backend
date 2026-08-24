@@ -193,6 +193,8 @@ const newCustomer = z.object({
     .nullable()
     .optional(),
   creditDays: z.number().int().min(0).max(365).default(30),
+  /** §15 MSMED: sets the firm's own §37(2)(g) clock against this customer to 45 days rather than 15. */
+  hasWrittenAgreement: z.boolean().default(false),
   site: z.object({
     label: z.string().trim().min(1),
     addressLine1: z.string().trim().min(1),
@@ -255,6 +257,7 @@ customerRoutes.post(
         // The site's state until a separate billing address is captured.
         billingStateCode: body.site.stateCode,
         creditDays: body.creditDays,
+        hasWrittenAgreement: body.hasWrittenAgreement,
       })
       .returning();
 

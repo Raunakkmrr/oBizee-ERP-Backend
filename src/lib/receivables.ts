@@ -109,3 +109,21 @@ export function taxOnUncollected(input: {
   const share = Math.min(1, input.outstandingPaise / input.grandTotalPaise);
   return Math.round(input.totalTaxPaise * share);
 }
+
+/**
+ * How much of an invoice's taxable value sits against money not received.
+ *
+ * Same apportionment as `taxOnUncollected`, applied to the taxable value
+ * instead of the tax. §37(2)(g) disallows the deduction of the *expense* a
+ * late-paying customer claimed, not a tax credit — so the figure a customer
+ * stands to lose is built from this, not from the GST.
+ */
+export function expenseOnUncollected(input: {
+  grandTotalPaise: number;
+  taxableValuePaise: number;
+  outstandingPaise: number;
+}): number {
+  if (input.grandTotalPaise <= 0) return 0;
+  const share = Math.min(1, input.outstandingPaise / input.grandTotalPaise);
+  return Math.round(input.taxableValuePaise * share);
+}

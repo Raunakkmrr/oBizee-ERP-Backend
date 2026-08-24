@@ -17,7 +17,7 @@ import { outstandingOf } from "../lib/receivables.ts";
  * many payments and its outstanding balance is derived — never a status field
  * somebody has to remember to flip.
  *
- * **The 45-day boundary is not decoration.** §43B(h) means a customer who is an
+ * **The 45-day boundary is not decoration.** §37(2)(g) means a customer who is an
  * MSME loses the deduction on what they owe us past 45 days, which makes it a
  * lever in a collection call rather than a bucket on a chart.
  */
@@ -123,7 +123,7 @@ paymentRoutes.post(
   },
 );
 
-/** FR-903 — what is owed, by age, with the §43B(h) boundary called out. */
+/** FR-903 — what is owed, by age, with the §37(2)(g) boundary called out. */
 paymentRoutes.get("/receivables", requirePermission("payment:read"), async (c) => {
   const { tenantId } = c.get("caller");
   const today = new Date();
