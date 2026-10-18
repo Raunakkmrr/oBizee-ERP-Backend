@@ -25,12 +25,14 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import * as esbuild from "esbuild";
 
 const platformOnly = process.argv.includes("--platform");
-const OUT = platformOnly ? "dist/platform-lambda" : "dist/lambda";
+const tenantOnly = process.argv.includes("--tenant-auth");
+if (platformOnly && tenantOnly) throw new Error("Choose one Lambda target");
+const OUT = platformOnly ? "dist/platform-lambda" : tenantOnly ? "dist/tenant-lambda" : "dist/lambda";
 
 await rm(OUT, { recursive: true, force: true });
 
 const result = await esbuild.build({
-  entryPoints: [platformOnly ? "src/platform-lambda.ts" : "src/lambda.ts"],
+  entryPoints: [platformOnly ? "src/platform-lambda.ts" : tenantOnly ? "src/tenant-lambda.ts" : "src/lambda.ts"],
   outfile: `${OUT}/index.mjs`,
   bundle: true,
   platform: "node",

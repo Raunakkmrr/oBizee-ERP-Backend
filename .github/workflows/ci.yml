@@ -105,6 +105,35 @@ jobs:
           retention-days: 90
           compression-level: 0
 
+      - name: Build, import, and package the isolated tenant authentication runtime
+        env:
+          DATABASE_URL: postgresql://ci:ci@ci.invalid/ci?sslmode=require
+          APP_DATABASE_URL: postgresql://ci:ci@ci.invalid/ci?sslmode=require
+          JWT_SECRET: ci-only-not-a-real-secret-at-least-32-chars
+        run: |
+          set -euo pipefail
+          pnpm run build:tenant-lambda
+          node --input-type=module -e "
+            const m = await import('./dist/tenant-lambda/index.mjs');
+            if (typeof m.handler !== 'function') throw new Error('no tenant handler export');
+          "
+          touch -t 198001010000 dist/tenant-lambda/index.mjs dist/tenant-lambda/package.json
+          zip -X -j dist/tenant-lambda.zip dist/tenant-lambda/index.mjs dist/tenant-lambda/package.json
+          test "$(unzip -Z1 dist/tenant-lambda.zip | sort)" = "$(printf 'index.mjs\npackage.json')"
+          sha256sum dist/tenant-lambda.zip > dist/tenant-lambda.zip.sha256
+
+      - name: Retain the exact checked tenant archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tenant-lambda-${{ github.sha }}
+          path: |
+            dist/tenant-lambda.zip
+            dist/tenant-lambda.zip.sha256
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 90
+          compression-level: 0
+
   deploy-platform:
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Raunakkmrr/oBizee-ERP-Backend'
@@ -188,4 +217,89 @@ jobs:
             printf 'Platform commit: `%s`\n\n' "$GITHUB_SHA"
             printf 'Archive CodeSha256: `%s`\n\n' "$expected"
             printf '```json\n'; jq . platform-before.json platform-after.json; printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-tenant:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Raunakkmrr/oBizee-ERP-Backend'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: obizee-erp-tenant-production
+      cancel-in-progress: false
+    env:
+      AWS_REGION: ap-south-1
+      AWS_PAGER: ""
+      TENANT_FUNCTION_ARN: arn:aws:lambda:ap-south-1:940482448572:function:obizee-erp-tenant
+    steps:
+      - name: Download the checked archive from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tenant-lambda-${{ github.sha }}
+          path: dist
+
+      - name: Verify archive and reject a stale main run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha256sum --check dist/tenant-lambda.zip.sha256
+          test "$(unzip -Z1 dist/tenant-lambda.zip | sort)" = "$(printf 'index.mjs\npackage.json')"
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$latest" = "$GITHUB_SHA" || { echo 'Refusing to deploy a superseded main commit'; exit 1; }
+
+      - name: Assume the tenant-only deployment role through OIDC
+        uses: aws-actions/configure-aws-credentials@99214aa6889fcddfa57764031d71add364327e59 # v6.1.3
+        with:
+          role-to-assume: arn:aws:iam::940482448572:role/github-obizee-erp-tenant-deploy
+          aws-region: ap-south-1
+          audience: sts.amazonaws.com
+          allowed-account-ids: "940482448572"
+          role-duration-seconds: 900
+          role-session-name: tenant-${{ github.run_id }}-${{ github.run_attempt }}
+          unset-current-credentials: true
+
+      - name: Update only the tenant code and verify the deployed hash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          before=$(aws lambda get-function-configuration --function-name "$TENANT_FUNCTION_ARN" \
+            --query '{RevisionId:RevisionId,CodeSha256:CodeSha256,LastModified:LastModified,Runtime:Runtime,Handler:Handler,PackageType:PackageType,LastUpdateStatus:LastUpdateStatus}' --output json)
+          printf '%s\n' "$before" > tenant-before.json
+          jq -e '.Runtime == "nodejs22.x" and .Handler == "index.handler" and .PackageType == "Zip" and .LastUpdateStatus == "Successful"' tenant-before.json
+          revision=$(jq -er '.RevisionId' tenant-before.json)
+          expected=$(openssl dgst -sha256 -binary dist/tenant-lambda.zip | openssl base64 -A)
+          # Recheck after OIDC/config/hash preparation, directly at the write gate.
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$latest" = "$GITHUB_SHA" || { echo 'Refusing to deploy a superseded main commit at the write gate'; exit 1; }
+          aws lambda update-function-code --function-name "$TENANT_FUNCTION_ARN" \
+            --revision-id "$revision" --zip-file fileb://dist/tenant-lambda.zip \
+            --query '{RevisionId:RevisionId,CodeSha256:CodeSha256,LastModified:LastModified}' --output json > tenant-update.json
+          {
+            printf 'Submitted tenant commit: `%s`\n\n' "$GITHUB_SHA"
+            printf '```json\n'; jq . tenant-update.json; printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if ! latest_after=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha'); then
+            echo '::error::Platform update was submitted, but main could not be rechecked. Manual review required; no automatic rollback.'
+            printf '\nMain recheck failed after the write. Manual review required; no automatic rollback.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if test "$latest_after" != "$GITHUB_SHA"; then
+            echo '::error::Main advanced during the tenant write. Manual review required; no automatic rollback.'
+            printf '\nMain advanced during the write to `%s`. Manual review required; no automatic rollback.\n' "$latest_after" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # This waiter uses only GetFunctionConfiguration, matching the IAM policy.
+          aws lambda wait function-updated --function-name "$TENANT_FUNCTION_ARN"
+          aws lambda get-function-configuration --function-name "$TENANT_FUNCTION_ARN" \
+            --query '{RevisionId:RevisionId,CodeSha256:CodeSha256,LastModified:LastModified,LastUpdateStatus:LastUpdateStatus}' --output json > tenant-after.json
+          jq -e --arg expected "$expected" '.CodeSha256 == $expected and .LastUpdateStatus == "Successful"' tenant-after.json
+          {
+            printf 'Platform commit: `%s`\n\n' "$GITHUB_SHA"
+            printf 'Archive CodeSha256: `%s`\n\n' "$expected"
+            printf '```json\n'; jq . tenant-before.json tenant-after.json; printf '```\n'
           } >> "$GITHUB_STEP_SUMMARY"

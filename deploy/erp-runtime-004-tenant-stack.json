@@ -1,0 +1,329 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "ERP-RUNTIME-004 reviewed bootstrap only: isolated tenant auth API; application code released exclusively by GitHub CI.",
+  "Parameters": {
+    "WebOrigin": {
+      "Type": "String",
+      "AllowedPattern": "^https://main\\.[a-z0-9]+\\.amplifyapp\\.com$",
+      "Description": "Exact generated main branch web origin, no trailing slash. Create hosting canary first; do not invent a URL."
+    },
+    "TenantSecretArn": {
+      "Type": "String",
+      "AllowedPattern": "^arn:aws:secretsmanager:ap-south-1:940482448572:secret:erp-runtime-004-tenant-[A-Za-z0-9-]+$",
+      "Description": "Approved secret containing DATABASE_URL, APP_DATABASE_URL, and distinct JWT_SECRET. Values never enter source or CI."
+    }
+  },
+  "Resources": {
+    "TenantLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "LogGroupName": "/aws/lambda/obizee-erp-tenant",
+        "RetentionInDays": 30
+      }
+    },
+    "TenantExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "obizee-erp-tenant-lambda-exec",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "tenant-logs-only",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": "arn:aws:logs:ap-south-1:940482448572:log-group:/aws/lambda/obizee-erp-tenant:*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "TenantFunction": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": "TenantLogs",
+      "Properties": {
+        "FunctionName": "obizee-erp-tenant",
+        "Runtime": "nodejs22.x",
+        "Handler": "index.handler",
+        "MemorySize": 512,
+        "Timeout": 30,
+        "Role": {
+          "Fn::GetAtt": [
+            "TenantExecutionRole",
+            "Arn"
+          ]
+        },
+        "Code": {
+          "ZipFile": "exports.handler = async () => ({statusCode:503,headers:{'content-type':'application/json','cache-control':'no-store'},body:JSON.stringify({error:'Tenant runtime is not released'})});"
+        },
+        "Environment": {
+          "Variables": {
+            "NODE_ENV": "production",
+            "WEB_ORIGINS": {
+              "Ref": "WebOrigin"
+            },
+            "DATABASE_URL": {
+              "Fn::Sub": "{{resolve:secretsmanager:${TenantSecretArn}:SecretString:DATABASE_URL}}"
+            },
+            "APP_DATABASE_URL": {
+              "Fn::Sub": "{{resolve:secretsmanager:${TenantSecretArn}:SecretString:APP_DATABASE_URL}}"
+            },
+            "JWT_SECRET": {
+              "Fn::Sub": "{{resolve:secretsmanager:${TenantSecretArn}:SecretString:JWT_SECRET}}"
+            }
+          }
+        }
+      }
+    },
+    "TenantApi": {
+      "Type": "AWS::ApiGatewayV2::Api",
+      "Properties": {
+        "Name": "obizee-erp-tenant",
+        "ProtocolType": "HTTP",
+        "DisableExecuteApiEndpoint": false
+      }
+    },
+    "TenantIntegration": {
+      "Type": "AWS::ApiGatewayV2::Integration",
+      "Properties": {
+        "ApiId": {
+          "Ref": "TenantApi"
+        },
+        "IntegrationType": "AWS_PROXY",
+        "IntegrationUri": {
+          "Fn::GetAtt": [
+            "TenantFunction",
+            "Arn"
+          ]
+        },
+        "PayloadFormatVersion": "2.0",
+        "TimeoutInMillis": 30000
+      }
+    },
+    "TenantStage": {
+      "Type": "AWS::ApiGatewayV2::Stage",
+      "Properties": {
+        "ApiId": {
+          "Ref": "TenantApi"
+        },
+        "StageName": "$default",
+        "AutoDeploy": true,
+        "DefaultRouteSettings": {
+          "ThrottlingBurstLimit": 10,
+          "ThrottlingRateLimit": 5
+        }
+      }
+    },
+    "TenantInvokePermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "TenantFunction",
+            "Arn"
+          ]
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceAccount": "940482448572",
+        "SourceArn": {
+          "Fn::Sub": "arn:aws:execute-api:ap-south-1:940482448572:${TenantApi}/*/*/*"
+        }
+      }
+    },
+    "TenantDeployRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": "github-obizee-erp-tenant-deploy",
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Federated": "arn:aws:iam::940482448572:oidc-provider/token.actions.githubusercontent.com"
+              },
+              "Action": "sts:AssumeRoleWithWebIdentity",
+              "Condition": {
+                "StringEquals": {
+                  "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                  "token.actions.githubusercontent.com:sub": "repo:Raunakkmrr@48851091/oBizee-ERP-Backend@1328693208:ref:refs/heads/main"
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "tenant-code-only",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "lambda:GetFunctionConfiguration",
+                    "lambda:UpdateFunctionCode"
+                  ],
+                  "Resource": "arn:aws:lambda:ap-south-1:940482448572:function:obizee-erp-tenant"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "TenantRoute0": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "TenantApi"
+        },
+        "RouteKey": "GET /health",
+        "AuthorizationType": "NONE",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "TenantIntegration"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "TenantRoute1": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "TenantApi"
+        },
+        "RouteKey": "POST /auth/password",
+        "AuthorizationType": "NONE",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "TenantIntegration"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "TenantRoute2": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "TenantApi"
+        },
+        "RouteKey": "POST /auth/refresh",
+        "AuthorizationType": "NONE",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "TenantIntegration"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "TenantRoute3": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "TenantApi"
+        },
+        "RouteKey": "POST /auth/sign-out",
+        "AuthorizationType": "NONE",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "TenantIntegration"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "TenantRoute4": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "TenantApi"
+        },
+        "RouteKey": "GET /api/me",
+        "AuthorizationType": "NONE",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "TenantIntegration"
+              }
+            ]
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "TenantApiUrl": {
+      "Value": {
+        "Fn::GetAtt": [
+          "TenantApi",
+          "ApiEndpoint"
+        ]
+      }
+    },
+    "TenantFunctionArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "TenantFunction",
+          "Arn"
+        ]
+      }
+    },
+    "TenantDeploymentRoleArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "TenantDeployRole",
+          "Arn"
+        ]
+      }
+    }
+  }
+}
