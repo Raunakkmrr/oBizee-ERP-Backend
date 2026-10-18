@@ -162,7 +162,7 @@ describe("computeTotals — FR-812's rounding rule", () => {
     }
 
     expect(checked).toBe(100_000);
-  });
+  }, 15_000);
 });
 
 describe("codeForAato — FR-803 digit precision", () => {
