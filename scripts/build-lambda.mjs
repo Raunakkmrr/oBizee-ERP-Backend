@@ -24,12 +24,13 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 
 import * as esbuild from "esbuild";
 
-const OUT = "dist/lambda";
+const platformOnly = process.argv.includes("--platform");
+const OUT = platformOnly ? "dist/platform-lambda" : "dist/lambda";
 
 await rm(OUT, { recursive: true, force: true });
 
 const result = await esbuild.build({
-  entryPoints: ["src/lambda.ts"],
+  entryPoints: [platformOnly ? "src/platform-lambda.ts" : "src/lambda.ts"],
   outfile: `${OUT}/index.mjs`,
   bundle: true,
   platform: "node",
