@@ -5,6 +5,7 @@ import { accessSessionActive, consumeActiveRefresh, createPasswordAuthSession,
   revokeSessionByRefresh } from "../auth/z-sessions.ts";
 import { activeUser, passwordCandidates, saveRefresh, revokeRefresh,
   type TenantUser } from "./store.ts";
+import { cohortEntitlements } from "./entitlements.ts";
 
 export const PASSWORD_REFUSAL = "That email and password do not match";
 const ISSUER = "obizee-erp-tenant";
@@ -19,7 +20,8 @@ export function tokenHash(token: string): string {
 }
 export function identity(user: TenantUser) {
   return { id: user.id, tenantId: user.tenantId, name: user.name, role: user.role,
-    level: user.level, mustChangePassword: user.mustChangePassword };
+    level: user.level, mustChangePassword: user.mustChangePassword,
+    access: cohortEntitlements() };
 }
 
 async function issue(user: TenantUser, sessionId: string) {

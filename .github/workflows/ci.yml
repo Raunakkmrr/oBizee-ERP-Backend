@@ -32,8 +32,14 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    outputs:
+      platform: ${{ steps.impact.outputs.platform }}
+      tenant: ${{ steps.impact.outputs.tenant }}
+
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
         with:
@@ -46,6 +52,18 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      - name: Determine reviewed Lambda deployment impact
+        id: impact
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          node --test scripts/lambda-impact.test.mjs
+          if test "$GITHUB_EVENT_NAME" = push; then
+            node scripts/lambda-impact.mjs "$PUSH_BEFORE" "$PUSH_AFTER"
+          fi
 
       - name: Types
         run: pnpm exec tsc --noEmit
@@ -136,7 +154,7 @@ jobs:
 
   deploy-platform:
     needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Raunakkmrr/oBizee-ERP-Backend'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Raunakkmrr/oBizee-ERP-Backend' && needs.check.outputs.platform == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -221,7 +239,7 @@ jobs:
 
   deploy-tenant:
     needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Raunakkmrr/oBizee-ERP-Backend'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'Raunakkmrr/oBizee-ERP-Backend' && needs.check.outputs.tenant == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

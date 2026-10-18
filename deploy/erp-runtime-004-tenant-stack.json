@@ -278,6 +278,69 @@
         }
       }
     },
+    "TenantCoreWorkspace": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "TenantApi"
+        },
+        "RouteKey": "GET /api/core/workspace",
+        "AuthorizationType": "NONE",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "TenantIntegration"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "TenantCoreCustomersRead": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "TenantApi"
+        },
+        "RouteKey": "GET /api/core/customers",
+        "AuthorizationType": "NONE",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "TenantIntegration"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    "TenantCoreCustomersCreate": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {
+          "Ref": "TenantApi"
+        },
+        "RouteKey": "POST /api/core/customers",
+        "AuthorizationType": "NONE",
+        "Target": {
+          "Fn::Join": [
+            "",
+            [
+              "integrations/",
+              {
+                "Ref": "TenantIntegration"
+              }
+            ]
+          ]
+        }
+      }
+    },
     "TenantRoute4": {
       "Type": "AWS::ApiGatewayV2::Route",
       "Properties": {

@@ -7,12 +7,15 @@ import { clearRefreshCookie, readRefreshToken, setRefreshCookie,
 import { clear, consumeAll, LIMITS, refund, tooMany } from "../lib/rate-limit.ts";
 import { currentIdentity, passwordSignIn, PASSWORD_REFUSAL,
   refreshSession, signOut, tokenHash } from "./service.ts";
+import { cohortAllowed } from "./entitlements.ts";
 
 const REFRESH_PER_TOKEN = { max: 30, windowSeconds: 15 * 60 };
 
-/** An intentionally bounded tenant surface. No control-plane, OTP, or A–Z routes. */
+/** Explicit tenant cohort only. No control-plane, OTP, or wholesale A–Z router. */
 export function createTenantApp() {
-  const app = new Hono();
+  const app = new Hono<{ Variables: {
+    caller: NonNullable<Awaited<ReturnType<typeof currentIdentity>>>;
+  } }>();
   const origins = (process.env.WEB_ORIGINS ?? "").split(",").map(x => x.trim()).filter(Boolean);
   app.use("*", cors({ origin: origin => origins.includes(origin) ? origin : null,
     credentials: true, allowMethods: ["GET", "POST", "OPTIONS"],
@@ -65,6 +68,41 @@ export function createTenantApp() {
     const header = c.req.header("authorization");
     const user = header?.startsWith("Bearer ") ? await currentIdentity(header.slice(7)) : null;
     return user ? c.json(user) : c.json({ error: "Sign in again" }, 401);
+  });
+  // Every data request revalidates SID + active user + lifecycle before policy.
+  // No tenant/actor/role supplied by the browser is used as authority.
+  app.use("/api/core/*", async (c, next) => {
+    const header = c.req.header("authorization");
+    const user = header?.startsWith("Bearer ") ? await currentIdentity(header.slice(7)) : null;
+    if (!user) return c.json({ error: "Sign in again" }, 401);
+    c.set("caller", user);
+    await next();
+  });
+  app.get("/api/core/workspace", async c => {
+    const user = c.get("caller");
+    if (!cohortAllowed("overview")) return c.json({ error: "Workspace access is unavailable" }, 403);
+    const result = await (await import("./workspace.ts")).readWorkspace(user);
+    return result ? c.json(result) : c.json({ error: "Company information is unavailable" }, 503);
+  });
+  app.get("/api/core/customers", async c => {
+    const user = c.get("caller");
+    if (!cohortAllowed("customers")) return c.json({ error: "Customer access is unavailable" }, 403);
+    const page = z.coerce.number().int().min(0).max(10000).safeParse(c.req.query("page") ?? "0");
+    if (!page.success) return c.json({ error: "Invalid page" }, 400);
+    return c.json(await (await import("./workspace.ts")).readCustomers(user, page.data));
+  });
+  app.post("/api/core/customers", zBody(z.object({
+    id: z.string().uuid(), branchId: z.string().uuid(), name: z.string().trim().min(1).max(200),
+    customerType: z.enum(["INDIVIDUAL", "BUSINESS"]),
+    billingStateCode: z.string().regex(/^(0[1-9]|[12][0-9]|3[0-8]|97)$/),
+    addressLine1: z.string().trim().min(1).max(300), locality: z.string().trim().min(1).max(120),
+    city: z.string().trim().min(1).max(120), pincode: z.string().regex(/^[1-9][0-9]{5}$/),
+  }).strict()), async c => {
+    const user = c.get("caller");
+    if (!cohortAllowed("customers")) return c.json({ error: "Customer access is unavailable" }, 403);
+    const result = await (await import("./workspace.ts")).createCustomer(user, c.req.valid("json"));
+    return result ? c.json(result, result.created ? 201 : 200) :
+      c.json({ error: "This request could not be saved. Reload and try again." }, 409);
   });
   // Never echo SQL errors, credentials, tokens, or upstream configuration.
   app.onError(() => new Response(JSON.stringify({ error: "Sign-in service is unavailable" }), {
