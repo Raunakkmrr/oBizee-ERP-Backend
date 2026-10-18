@@ -65,10 +65,20 @@ jobs:
         # Catches the class of failure that only appears at deploy: a dependency
         # that cannot be bundled, or an ESM/CJS problem that a type-check has no
         # opinion about.
+        env:
+          DATABASE_URL: postgresql://ci:ci@ci.invalid/ci?sslmode=require
+          APP_DATABASE_URL: postgresql://ci:ci@ci.invalid/ci?sslmode=require
+          JWT_SECRET: ci-only-not-a-real-secret-at-least-32-chars
         run: |
           pnpm run build:lambda
           node --input-type=module -e "
             const m = await import('./dist/lambda/index.mjs');
             if (typeof m.handler !== 'function') throw new Error('no handler export');
             console.log('handler exports cleanly');
+          "
+          pnpm run build:platform-lambda
+          node --input-type=module -e "
+            const m = await import('./dist/platform-lambda/index.mjs');
+            if (typeof m.handler !== 'function') throw new Error('no platform handler export');
+            console.log('platform handler exports cleanly');
           "
