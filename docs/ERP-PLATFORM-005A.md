@@ -172,3 +172,27 @@ reach sign-in; refresh is stable; no auth requests were sent. This is not an aut
 production canary. Authenticated shell/data tests are non-served unit/SQL tests.
 Full-platform acceptance, authenticated real-origin human canary and live independent
 review remain outstanding; this candidate does not claim those passed.
+
+## R2 — runner isolation and tenant-only catch-up (review required)
+CI 39142453441 failed before deployment because Vitest collected the node:test suite;
+178 Vitest tests passed, but neither Lambda deployed. vitest.config.ts now excludes
+ONLY scripts/lambda-impact.test.mjs. That suite still runs explicitly with node --test;
+its filename, classifier, workflow and all11 tests remain byte-for-byte unchanged.
+
+A test-config-only follow-up would select no runtime, leaving the cohort undeployed.
+The existing tenant template therefore has a bounded top-level Metadata release marker:
+ERPPlatform005ARelease revision R2-tenant-only-catch-up records the failed run and the
+exact reviewed tenant ZIP hash. That file is ALREADY a tenant-only classified deployment
+input, so this reviewed correction selects tenant=true/platform=false without changing
+classifier semantics. Metadata is non-resource CloudFormation information: every actual
+Resources, Parameters, Outputs, IAM, Lambda and API definition equals f029a468 unchanged.
+The only live route changes remain the previously approved THREE explicit route Adds.
+
+After independent R2 approval, use existing CI (no direct Lambda update). Confirm the
+tenant artifact remains SHA256 6f7df86888718574e002d7fea7af2e9cf4f4bbe84de5c22597062462e57ed8fc,
+platform skips and tenant succeeds; inspect the stack change set for only the original
+three Add routes, not resource/IAM modifications. No SQL migrations or web changes.
+Keep this marker as historical release intent after success. Advance or remove it ONLY
+in a separately reviewed tenant release: either change intentionally selects tenant
+again. Do not auto-clear it or treat it as evidence deployment succeeded. Source/CI,
+stack execution and the human authenticated canary remain separate release gates.

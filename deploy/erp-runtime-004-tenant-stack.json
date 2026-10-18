@@ -1,6 +1,14 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
   "Description": "ERP-RUNTIME-004 reviewed bootstrap only: isolated tenant auth API; application code released exclusively by GitHub CI.",
+  "Metadata": {
+    "ERPPlatform005ARelease": {
+      "Revision": "R2-tenant-only-catch-up",
+      "Reason": "CI 39142453441 failed before deployment; retry the reviewed tenant artifact only.",
+      "TenantZipSha256": "6f7df86888718574e002d7fea7af2e9cf4f4bbe84de5c22597062462e57ed8fc",
+      "Scope": "Tenant deployment input only; no resource, IAM or schema changes."
+    }
+  },
   "Parameters": {
     "WebOrigin": {
       "Type": "String",

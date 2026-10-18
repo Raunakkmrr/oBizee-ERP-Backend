@@ -8,7 +8,9 @@ export default defineConfig({
      * collect `._roles.sync.test.ts` as a suite and fail parsing binary.
      * Same root cause as the note in scripts/db-generate.sh.
      */
-    exclude: ["**/node_modules/**", "**/dist/**", "**/._*"],
+    // This suite uses node:test and runs explicitly in the deployment-impact step.
+    // Vitest collecting it reports "No test suite found" despite its Node tests passing.
+    exclude: ["**/node_modules/**", "**/dist/**", "**/._*", "scripts/lambda-impact.test.mjs"],
     /**
      * Several tests here fail a sign-in on purpose, and the limiter counts
      * those correctly. Run back to back with the Playwright suite from the same
