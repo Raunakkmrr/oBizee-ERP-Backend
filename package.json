@@ -17,6 +17,7 @@
     "build:lambda": "node scripts/build-lambda.mjs",
     "build:platform-lambda": "node scripts/build-lambda.mjs --platform",
     "build:tenant-lambda": "node scripts/build-lambda.mjs --tenant-auth",
+    "build:platform-server": "node scripts/build-lambda.mjs --platform-server",
     "backup": "node --experimental-strip-types --env-file=.env src/db/backup.ts",
     "e2e:prepare": "node --experimental-strip-types --env-file=.env src/db/prepare-e2e.ts"
   },

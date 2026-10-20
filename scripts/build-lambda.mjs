@@ -26,13 +26,20 @@ import * as esbuild from "esbuild";
 
 const platformOnly = process.argv.includes("--platform");
 const tenantOnly = process.argv.includes("--tenant-auth");
-if (platformOnly && tenantOnly) throw new Error("Choose one Lambda target");
-const OUT = platformOnly ? "dist/platform-lambda" : tenantOnly ? "dist/tenant-lambda" : "dist/lambda";
+// The platform surface as a pm2 process on the oBizee API host (src/platform-server.ts).
+const platformServer = process.argv.includes("--platform-server");
+if ([platformOnly, tenantOnly, platformServer].filter(Boolean).length > 1) throw new Error("Choose one build target");
+const TARGETS = [
+  [platformServer, "dist/platform-server", "src/platform-server.ts"],
+  [platformOnly, "dist/platform-lambda", "src/platform-lambda.ts"],
+  [tenantOnly, "dist/tenant-lambda", "src/tenant-lambda.ts"],
+];
+const [, OUT, ENTRY] = TARGETS.find(([chosen]) => chosen) ?? [true, "dist/lambda", "src/lambda.ts"];
 
 await rm(OUT, { recursive: true, force: true });
 
 const result = await esbuild.build({
-  entryPoints: [platformOnly ? "src/platform-lambda.ts" : tenantOnly ? "src/tenant-lambda.ts" : "src/lambda.ts"],
+  entryPoints: [ENTRY],
   outfile: `${OUT}/index.mjs`,
   bundle: true,
   platform: "node",
@@ -87,6 +94,10 @@ console.log(`\n${OUT}/index.mjs — ${(bytes / 1024).toFixed(0)} KB including th
   Named because it is silent when it is wrong: `handler` is what the function's
   Handler setting points at, and a mismatch is a 502 with nothing in the log.
 */
-console.log("\nDeploy with:");
-console.log("  Handler: index.handler");
-console.log("  Runtime: nodejs22.x   Memory: 512 MB or more (scrypt scales with CPU)");
+if (platformServer) {
+  console.log("\nRun with: node --env-file=<.env> index.mjs   (pm2 app erp-api, deploy/ecosystem.config.cjs)");
+} else {
+  console.log("\nDeploy with:");
+  console.log("  Handler: index.handler");
+  console.log("  Runtime: nodejs22.x   Memory: 512 MB or more (scrypt scales with CPU)");
+}
